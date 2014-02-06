@@ -30,7 +30,19 @@ class Signal():
             self.value = value
             for c in self.fanout:
                 c()
+    
+    def reset(self):
+        self.set(False)
         
+        
+class FeedbackSignal(Signal):
+    def connect(self, sig):
+        def inner():
+            self.set(sig.value)
+        sig.fanout.append(inner)
+        inner()
+    
+    
 
 class Circuit():
     def __init__(self, name, inputs):
@@ -65,6 +77,12 @@ def Or(a, b):
 def Xor(a, b):
     return CircuitOper(lambda x, y: x ^ y, a, b)
 
+def Not(a):
+    return CircuitOper(lambda x: not x , a)
+
+def Nor(a, b):
+    return CircuitOper(lambda x, y: not (x | y), a, b)
+
 def HalfAdder(a, b):
     s = a ^ b
     c = a & b
@@ -76,6 +94,17 @@ def FullAdder(a, b, c_in):
     c_out = c1 | c2
     return s2, c_out
      
+     
+def RSLatch(r, s):
+    q_fb = FeedbackSignal()
+    nq_fb = FeedbackSignal()
+    q = Nor(r, nq_fb)
+    nq = Nor(s, q_fb)
+    q_fb.connect(q)
+    nq_fb.connect(nq)
+    return q, nq
+    
+    
 
 if __name__ == '__main__':
     
@@ -88,6 +117,18 @@ if __name__ == '__main__':
     print signals
     c.set()
     print signals
+    
+    r = Signal()
+    s = Signal()
+    q, nq = RSLatch(r, s)
+    
+    print q, nq
+    s.set()
+    print q, nq
+    r.set()
+    print q, nq
+    s.reset()
+    print q, nq
     
 
 
