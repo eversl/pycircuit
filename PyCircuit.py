@@ -95,40 +95,22 @@ def FullAdder(a, b, c_in):
     return s2, c_out
      
      
-def RSLatch(r, s):
-    q_fb = FeedbackSignal()
-    nq_fb = FeedbackSignal()
-    q = Nor(r, nq_fb)
+def SRLatch(s, r):
+    q_fb = FeedbackSignal(not r.value)
+    nq_fb = FeedbackSignal(not s.value)
     nq = Nor(s, q_fb)
+    q = Nor(r, nq_fb)
     q_fb.connect(q)
     nq_fb.connect(nq)
     return q, nq
     
-    
+def DLatch(d, e):
+    return SRLatch(s = d & e, r = Not(d) & e)    
 
-if __name__ == '__main__':
-    
-    a, b, c = Signal(), Signal(), Signal()
-    signals = FullAdder(a, b, c)
-    
-    a.set()
-    print signals
-    b.set()
-    print signals
-    c.set()
-    print signals
-    
-    r = Signal()
-    s = Signal()
-    q, nq = RSLatch(r, s)
-    
-    print q, nq
-    s.set()
-    print q, nq
-    r.set()
-    print q, nq
-    s.reset()
-    print q, nq
-    
 
+
+def DFlipFlop(d, clk, s=Signal(0), r=Signal(0)):
+    master = DLatch(d=d, e=clk)
+    slave = DLatch(d=master[0], e=Not(clk))
+    return slave
 
