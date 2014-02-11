@@ -5,7 +5,8 @@ Created on Feb 6, 2014
 '''
 import unittest
 from PyCircuit import Signal, FullAdder, SRLatch, DLatch, DFlipFlop, Not,\
-    intToSignals, signalsToInt, RippleCarryAdder, Negate, Vector, Multiplier
+    intToSignals, signalsToInt, RippleCarryAdder, Negate, Vector, Multiplier,\
+    Decoder, Memory
 
 
 class Test(unittest.TestCase):
@@ -119,9 +120,35 @@ class Test(unittest.TestCase):
 
 
     def test_Multiplier(self):
-        self.assertEqual(signalsToInt(Multiplier(Vector(15,4), Vector(15,4), False),False), 225)
+        bitlen = 8
+        a = Vector(0, bitlen)
+        b = Vector(0, bitlen)
+        m = Vector(Multiplier(a, b, False))
+        self.assertEqual(len(m), bitlen * 2)
+        for av in xrange(2, 2**bitlen, 23):
+            a[:] = av
+            for bv in xrange(3, 2**bitlen, 27):
+                b[:] = bv
+                self.assertEqual(signalsToInt(m,False), av * bv)
     
-    
+
+    def test_Decoder(self):
+        a = Vector(0,8)
+        d = Decoder(a)
+        for i in xrange(2**8):
+            a[:] = i
+            self.assertEqual( signalsToInt(Vector(d), False), 2**i)
+
+
+    def test_Memory(self):
+        a = Vector(0,8)
+        d = Vector(0,16)
+        w = Signal()
+        m = Memory(a, d, w)
+        print m
+        
+        
+        
 if __name__ == "__main__":
     #import sys;sys.argv = ['', 'Test.testName']
     unittest.main()

@@ -125,11 +125,21 @@ class Vector():
         return signalsToInt(self.ls)
         
     def __setitem__(self, key, value):
-        print key, value
-        return self
+        if isinstance(key, slice):
+            signals = self.ls[key]
+        if isinstance(value, int):
+            bits = intToBits(value, len(signals))
+        else:
+            bits = value    
+        for b, s in zip(bits, signals): 
+            s.set(b)
+
+
+def intToBits(num, bits):
+    return (((num >> i) & 1) == 1 for i in xrange(bits))
 
 def intToSignals(num, bits):
-    return [Signal(((num >> i) & 1) == 1) for i in xrange(bits)]
+    return [Signal(b) for b in intToBits(num, bits)]
 
 def signalsToInt(ls, signed=True):
     num = 0
@@ -165,6 +175,9 @@ def Not(a):
 
 def Nor(a, b):
     return CircuitOper(lambda x, y: not (x | y), a, b)
+
+def AndAll(*a):
+    return CircuitOper(lambda *x: reduce(lambda p, q: p & q, x), *a)
 
 
 def HalfAdder(a, b):
@@ -211,7 +224,6 @@ def Multiplier(als, bls, signed = True):
     return res
      
      
-     
 def If(pred, cons, alt):
     return [(pred & c) | (Not(pred) & a) for c, a in zip_all(cons, alt)]
          
@@ -235,3 +247,22 @@ def DFlipFlop(d, clk, s=Signal(0), r=Signal(0)):
     slave = DLatch(d=master[0], e=Not(clk))
     return slave
 
+
+def Decoder(a):
+    if len(a) == 1:
+        return [~ a[-1], a[-1]]
+    else:
+        sub = Decoder(a[:-1])
+        not_a = ~ a[-1]
+        return [not_a & d for d in sub] + [a[-1] & d for d in sub]
+    
+    
+def Memory(addr, data, isWrite):
+    wordlines = Decoder(addr)
+    sr = [(isWrite & d, isWrite & ~d) for d in data]
+
+    q_outs = [[SRLatch(w & s, w & r)[0] for s, r in sr] for w in wordlines]
+    return [AndAll(*l) for l in zip(*q_outs)]
+        
+    
+        
