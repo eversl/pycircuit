@@ -7,14 +7,15 @@ Created on Feb 4, 2014
 
 def zip_all(*args):
     for i in xrange(0, len(args)):
-        for j in xrange(i+1, len(args)):
+        for j in xrange(i + 1, len(args)):
             if len(args[i]) != len(args[j]):
                 raise TypeError('Vectors are not of equal size')
     return zip(*args)
        
     
 class Signal():
-    def __init__(self, initval = False):
+    __slots__ = ['fanout']
+    def __init__(self, initval=False):
         self.value = bool(initval)
         self.fanout = []
         
@@ -36,7 +37,7 @@ class Signal():
     def __repr__(self):
         return 'Signal({0})'.format(self.value)
         
-    def set(self, value = True):
+    def set(self, value=True):
         if value != self.value:
             self.value = value
             for c in self.fanout:
@@ -176,8 +177,8 @@ def Not(a):
 def Nor(a, b):
     return CircuitOper(lambda x, y: not (x | y), a, b)
 
-def AndAll(*a):
-    return CircuitOper(lambda *x: reduce(lambda p, q: p & q, x), *a)
+def OrAll(*a):
+    return CircuitOper(lambda *x: reduce(lambda p, q: p | q, x), *a)
 
 
 def HalfAdder(a, b):
@@ -203,7 +204,7 @@ def Negate(als):
     sls, _ = RippleCarryAdder([Not(a) for a in als], [Signal()] * len(als), Signal(True))
     return sls
 
-def Multiplier(als, bls, signed = True):
+def Multiplier(als, bls, signed=True):
     if signed:
         als_sign = als[-1]
         bls_sign = bls[-1]
@@ -212,7 +213,7 @@ def Multiplier(als, bls, signed = True):
     else: 
         als = [a for a in als]  # to make sure Vectors are made to lists
         bls = [b for b in bls]
-    sls, c = [Signal()] * (len(bls)-1), Signal()
+    sls, c = [Signal()] * (len(bls) - 1), Signal()
     for a in als:
         sls, c = RippleCarryAdder([a & b for b in bls], sls + [c])
         bls = [Signal()] + bls
@@ -238,11 +239,11 @@ def SRLatch(s, r):
     return q, nq
     
 def DLatch(d, e):
-    return SRLatch(s = d & e, r = Not(d) & e)    
+    return SRLatch(s=d & e, r=Not(d) & e)    
 
 
 
-def DFlipFlop(d, clk, s=Signal(0), r=Signal(0)):
+def DFlipFlop(d, clk):
     master = DLatch(d=d, e=clk)
     slave = DLatch(d=master[0], e=Not(clk))
     return slave
@@ -250,19 +251,32 @@ def DFlipFlop(d, clk, s=Signal(0), r=Signal(0)):
 
 def Decoder(a):
     if len(a) == 1:
-        return [~ a[-1], a[-1]]
+        return [~a[-1], a[-1]]
     else:
         sub = Decoder(a[:-1])
-        not_a = ~ a[-1]
+        not_a = ~a[-1]
         return [not_a & d for d in sub] + [a[-1] & d for d in sub]
     
     
-def Memory(addr, data, isWrite):
-    wordlines = Decoder(addr)
+def Memory(mem_addr, data, isWrite):
+    wordlines = Decoder(mem_addr)
     sr = [(isWrite & d, isWrite & ~d) for d in data]
 
-    q_outs = [[SRLatch(w & s, w & r)[0] for s, r in sr] for w in wordlines]
-    return [AndAll(*l) for l in zip(*q_outs)]
+    q_outs = [[SRLatch(mem_wr & s, mem_wr & r)[0] & mem_wr for s, r in sr] for mem_wr in wordlines]
+    return Vector([OrAll(*l) for l in zip(*q_outs)])
         
     
-        
+
+def Multiplexer(sel, alts):
+    enables = Decoder(sel)
+    return Vector([OrAll(*[l & mem_wr for (l, mem_wr) in zip_all(ll, enables)]) for ll in zip_all(*alts)])
+
+
+def RegisterFile(addr1, addr2, addr_w, data_w, clk_w):
+    wordlines_w = Decoder(addr_w)
+    
+    q_outs = [[DFlipFlop(d, mem_wr & clk_w)[0] for d in data_w] for mem_wr in wordlines_w]
+    
+    data1 = Multiplexer(addr1, q_outs)                
+    data2 = Multiplexer(addr2, q_outs)      
+    return data1, data2       

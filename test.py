@@ -4,9 +4,9 @@ Created on Feb 6, 2014
 @author: matrix1
 '''
 import unittest
-from PyCircuit import Signal, FullAdder, SRLatch, DLatch, DFlipFlop, Not,\
-    intToSignals, signalsToInt, RippleCarryAdder, Negate, Vector, Multiplier,\
-    Decoder, Memory
+from PyCircuit import Signal, FullAdder, SRLatch, DLatch, DFlipFlop, Not, \
+    intToSignals, signalsToInt, RippleCarryAdder, Negate, Vector, Multiplier, \
+    Decoder, Memory, RegisterFile
 
 
 class Test(unittest.TestCase):
@@ -77,9 +77,9 @@ class Test(unittest.TestCase):
         self.assertEquals([sig.value for sig in signals], [False, False])
         a.set()  # sum should be 1 (sum, carry) 
         self.assertEquals([sig.value for sig in signals], [True, False])
-        b.set() # sum = 2
+        b.set()  # sum = 2
         self.assertEquals([sig.value for sig in signals], [False, True])
-        c.set() # sum = 3
+        c.set()  # sum = 3
         self.assertEquals([sig.value for sig in signals], [True, True])
 
 
@@ -116,7 +116,7 @@ class Test(unittest.TestCase):
                 als = intToSignals(num, 16)
                 sls = Negate(als)
                 neg = signalsToInt(sls, True)
-                self.assertEqual(neg, - num)
+                self.assertEqual(neg, -num)
 
 
     def test_Multiplier(self):
@@ -125,30 +125,54 @@ class Test(unittest.TestCase):
         b = Vector(0, bitlen)
         m = Vector(Multiplier(a, b, False))
         self.assertEqual(len(m), bitlen * 2)
-        for av in xrange(2, 2**bitlen, 23):
+        for av in xrange(2, 2 ** bitlen, 23):
             a[:] = av
-            for bv in xrange(3, 2**bitlen, 27):
+            for bv in xrange(3, 2 ** bitlen, 27):
                 b[:] = bv
-                self.assertEqual(signalsToInt(m,False), av * bv)
+                self.assertEqual(signalsToInt(m, False), av * bv)
     
 
     def test_Decoder(self):
-        a = Vector(0,8)
+        a = Vector(0, 8)
         d = Decoder(a)
-        for i in xrange(2**8):
+        for i in xrange(2 ** 8):
             a[:] = i
-            self.assertEqual( signalsToInt(Vector(d), False), 2**i)
+            self.assertEqual(signalsToInt(Vector(d), False), 2 ** i)
 
 
     def test_Memory(self):
-        a = Vector(0,8)
-        d = Vector(0,16)
-        w = Signal()
-        m = Memory(a, d, w)
-        print m
-        
-        
-        
+        a = Vector(0, 8)
+        d = Vector(0, 16)
+        mem_wr = Signal()
+        q = Memory(a, d, mem_wr)
+        for i in xrange(2 ** 8):
+            d[:] = i
+            a[:] = i
+            mem_wr.set()
+            mem_wr.reset()
+        for i in xrange(2 ** 8):
+            a[:] = i
+            self.assertEqual(int(q), i)
+
+    def test_RegisterFile(self):
+        addr1 = Vector(0, 3)
+        addr2 = Vector(0, 3)
+        addr_w = Vector(0, 3)
+        data_w = Vector(0, 16)
+        clk = Signal()
+        data1, data2 = RegisterFile(addr1, addr2, addr_w, data_w, clk)
+        for i in xrange(2 ** 3):
+            data_w[:] = i
+            addr_w[:] = i
+            clk.set()
+            clk.reset()
+        for i in xrange(2 ** 3):
+            addr1[:] = i
+            addr2[:] = (i + 1) % 2**3
+            self.assertEqual(int(data1), i)
+            self.assertEqual(int(data2), (i + 1) % 2**3)
+            
+             
 if __name__ == "__main__":
-    #import sys;sys.argv = ['', 'Test.testName']
+    # import sys;sys.argv = ['', 'Test.testName']
     unittest.main()
