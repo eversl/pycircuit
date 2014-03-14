@@ -13,8 +13,8 @@ def zip_all(*args):
     return zip(*args)
        
     
-class Signal():
-    __slots__ = ['fanout']
+class Signal(object):
+    __slots__ = ['fanout', 'value']
     def __init__(self, initval=False):
         self.value = bool(initval)
         self.fanout = []
@@ -35,7 +35,7 @@ class Signal():
         return Vector([self] * other)
 
     def __repr__(self):
-        return 'Signal({0})'.format(self.value)
+        return '{0}({1})'.format(type(self).__name__,self.value)
         
     def set(self, value=True):
         if value != self.value:
@@ -49,11 +49,12 @@ class Signal():
         
 class FeedbackSignal(Signal):
     def connect(self, sig):
-        def inner():
-            self.set(sig.value)
-        sig.fanout.append(inner)
-        inner()
+        self.sig = sig
+        sig.fanout.append(self)
+        self()
     
+    def __call__(self):
+        self.set(self.sig.value)
 
 class Vector():
     def __init__(self, value, bits=16):
@@ -153,32 +154,40 @@ def signalsToInt(ls, signed=True):
 
 
 
-def CircuitOper(func, *args):
-    sig = Signal()
-    def inner():
-        sig.set(func(*[arg.value for arg in args]))
-    for arg in args:
-        arg.fanout.append(inner)
-    inner()
-    return sig
+class CircuitOper(Signal):
+    def __init__(self, *args):
+        Signal.__init__(self)
+        self.args = args
+        
+        for arg in args:
+            arg.fanout.append(self)
+        self.__call__()
+        
+    def __call__(self):
+        self.set(self.func(*(arg.value for arg in self.args)))
+        
+    def func(self):
+        raise NotImplementedError()
 
-def And(a, b):
-    return CircuitOper(lambda x, y: x & y, a, b)
+class And(CircuitOper):
+    def func(self, a, b):
+        return a & b 
 
-def Or(a, b):
-    return CircuitOper(lambda x, y: x | y, a, b)
+class Or(CircuitOper):
+    def func(self, *a):
+        return reduce(lambda p, q: p | q, a)
 
-def Xor(a, b):
-    return CircuitOper(lambda x, y: x ^ y, a, b)
+class Xor(CircuitOper):
+    def func(self, a, b):
+        return a ^ b
 
-def Not(a):
-    return CircuitOper(lambda x: not x , a)
+class Not(CircuitOper):
+    def func(self, a):
+        return not a
 
-def Nor(a, b):
-    return CircuitOper(lambda x, y: not (x | y), a, b)
-
-def OrAll(*a):
-    return CircuitOper(lambda *x: reduce(lambda p, q: p | q, x), *a)
+class Nor(CircuitOper):
+    def func(self, a, b):
+        return not (a | b)
 
 
 def HalfAdder(a, b):
@@ -198,7 +207,30 @@ def RippleCarryAdder(als, bls, c=Signal()):
     for a, b in zip_all(als, bls): 
         s, c = FullAdder(a, b, c)
         sls.append(s)
-    return sls, c
+    return sls, c     
+
+
+def KoggeStoneAdder(als, bls, c=Signal()):
+    sls = []
+    prop_gen = {}
+    prop_gen[0] = [(a ^ b,  # propagate
+                 a & b)   # generate
+                for a, b in zip_all(als, bls)] 
+
+    step = 1
+    while step < len(prop_gen[0]):
+        prop_gen[step] = []
+        for i in xrange(len(prop_gen[0])):
+            p_i, g_i = prop_gen[step/2][i]
+            p_prev, g_prev = prop_gen[step/2][i-step] if i-step >= 0 else (Signal(0), Signal(0)) 
+            prop_gen[step].append((p_i & p_prev, (p_i & g_prev) | g_i)) 
+        step *= 2
+        
+    cls = [c] + [g for p,g in prop_gen[step/2]]
+    for a, b, c in zip_all(als, bls, cls[:-1]): 
+        s = a ^ b ^ c
+        sls.append(s)
+    return sls, cls[-1]
 
 def Negate(als):
     sls, _ = RippleCarryAdder([Not(a) for a in als], [Signal()] * len(als), Signal(True))
@@ -263,13 +295,13 @@ def Memory(mem_addr, data, isWrite):
     sr = [(isWrite & d, isWrite & ~d) for d in data]
 
     q_outs = [[SRLatch(mem_wr & s, mem_wr & r)[0] & mem_wr for s, r in sr] for mem_wr in wordlines]
-    return Vector([OrAll(*l) for l in zip(*q_outs)])
+    return Vector([Or(*l) for l in zip(*q_outs)])
         
     
 
 def Multiplexer(sel, alts):
     enables = Decoder(sel)
-    return Vector([OrAll(*[l & mem_wr for (l, mem_wr) in zip_all(ll, enables)]) for ll in zip_all(*alts)])
+    return Vector([Or(*[l & mem_wr for (l, mem_wr) in zip_all(ll, enables)]) for ll in zip_all(*alts)])
 
 
 def RegisterFile(addr1, addr2, addr_w, data_w, clk_w):
@@ -279,4 +311,18 @@ def RegisterFile(addr1, addr2, addr_w, data_w, clk_w):
     
     data1 = Multiplexer(addr1, q_outs)                
     data2 = Multiplexer(addr2, q_outs)      
-    return data1, data2       
+    return data1, data2    
+
+
+def calcAreaDelay(inputs):
+    levels = [set(inputs)]
+    i = 0
+    while len(levels[i]) > 0:
+        levels.append(set(c 
+        for inp in levels[i]
+            for c in inp.fanout
+                if not isinstance(c, FeedbackSignal)))
+
+        i += 1
+    return len(set().union(*levels)), i-1
+

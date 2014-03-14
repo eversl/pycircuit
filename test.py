@@ -6,7 +6,7 @@ Created on Feb 6, 2014
 import unittest
 from PyCircuit import Signal, FullAdder, SRLatch, DLatch, DFlipFlop, Not, \
     intToSignals, signalsToInt, RippleCarryAdder, Negate, Vector, Multiplier, \
-    Decoder, Memory, RegisterFile
+    Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder, CPU
 
 
 class Test(unittest.TestCase):
@@ -101,6 +101,16 @@ class Test(unittest.TestCase):
                 self.assertEqual(sum, a + b)
                 self.assertEqual(c_out.value, a < 0)
 
+    def test_KoggeStoneAdder(self):
+        for a in xrange(-256, 255, 67):
+            for b in xrange(-22756, 32767, 1453):
+                als = intToSignals(a, 16)
+                bls = intToSignals(b, 16)
+                sls, c_out = KoggeStoneAdder(als, bls)
+                sum = signalsToInt(sls, True)
+                self.assertEqual(sum, a + b)
+                self.assertEqual(c_out.value, a < 0)
+
     def test_arith(self):
         self.assertEquals(int(-Vector(10)), -10)
         self.assertEquals(int(Vector(10) + Vector(-24)), 10 + -24)
@@ -124,6 +134,7 @@ class Test(unittest.TestCase):
         a = Vector(0, bitlen)
         b = Vector(0, bitlen)
         m = Vector(Multiplier(a, b, False))
+        print calcAreaDelay(a[:] + b[:])
         self.assertEqual(len(m), bitlen * 2)
         for av in xrange(2, 2 ** bitlen, 23):
             a[:] = av
@@ -172,7 +183,22 @@ class Test(unittest.TestCase):
             self.assertEqual(int(data1), i)
             self.assertEqual(int(data2), (i + 1) % 2**3)
             
-             
+    def test_AdderDelay(self):
+        for bitlen in xrange(2, 65):
+            a = Vector(-1, bitlen)
+            b = Vector(-1, bitlen)
+            m,m_c = RippleCarryAdder(a, b)
+            c = Vector(-1, bitlen)
+            d = Vector(-1, bitlen)
+            n,n_c = KoggeStoneAdder(c, d)
+                    
+            m_ad = calcAreaDelay(a[:] + b[:])
+            
+            n_ad = calcAreaDelay(c[:] + d[:])
+            print 'KoggeStoneAdder:', bitlen, ':', n_ad
+            self.assertLess(m_ad[0], n_ad[0]) 
+            self.assertGreater(m_ad[1], n_ad[1]) 
+            
 if __name__ == "__main__":
     # import sys;sys.argv = ['', 'Test.testName']
     unittest.main()
