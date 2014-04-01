@@ -6,7 +6,8 @@ Created on Feb 6, 2014
 import unittest
 from PyCircuit import Signal, FullAdder, SRLatch, DLatch, DFlipFlop, Not, \
     intToSignals, signalsToInt, RippleCarryAdder, Negate, Vector, Multiplier, \
-    Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder, CPU
+    Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder
+from MSP430 import CPU
 
 
 class Test(unittest.TestCase):
@@ -156,6 +157,9 @@ class Test(unittest.TestCase):
         d = Vector(0, 16)
         mem_wr = Signal()
         q = Memory(a, d, mem_wr)
+        print calcAreaDelay(a)
+        print calcAreaDelay(d)
+        print calcAreaDelay([mem_wr])
         for i in xrange(2 ** 8):
             d[:] = i
             a[:] = i
@@ -193,11 +197,24 @@ class Test(unittest.TestCase):
             n,n_c = KoggeStoneAdder(c, d)
                     
             m_ad = calcAreaDelay(a[:] + b[:])
+            print 'RippleCarryAdder:', bitlen, ':', m_ad
             
             n_ad = calcAreaDelay(c[:] + d[:])
             print 'KoggeStoneAdder:', bitlen, ':', n_ad
             self.assertLess(m_ad[0], n_ad[0]) 
             self.assertGreater(m_ad[1], n_ad[1]) 
+            
+    
+    def test_CPU(self):
+        clk = Signal()
+        debuglines = CPU(clk)
+        
+        for _ in xrange(10):
+            clk.set()
+            clk.reset()
+            for k in debuglines:
+                print k, ':', debuglines[k]
+        self.fail('Debug')
             
 if __name__ == "__main__":
     # import sys;sys.argv = ['', 'Test.testName']

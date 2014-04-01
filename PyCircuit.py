@@ -26,7 +26,10 @@ class Signal(object):
         return Or(self, other)
     
     def __and__(self, other):
-        return And(self, other)
+        try:
+            return Vector(And(self, o) for o in other)
+        except TypeError:
+            return And(self, other)
     
     def __invert__(self):
         return Not(self)
@@ -102,7 +105,10 @@ class Vector():
         return NotImplemented
         
     def __and__(self, other):
-        return Vector(s & o for s, o in zip_all(self, other))
+        if isinstance(other, Signal):
+            return Vector(s & other for s in self)
+        else:
+            return Vector(s & o for s, o in zip_all(self, other))
         
     def __xor__(self, other):
         return Vector(s ^ o for s, o in zip_all(self, other))
@@ -136,6 +142,20 @@ class Vector():
         for b, s in zip(bits, signals): 
             s.set(b)
 
+
+class FeedbackVector(Vector):
+    def __init__(self, value, bits=16):
+        try:
+            value = (s for s in value)
+        except TypeError:
+            self.ls = [FeedbackSignal(b) for b in intToBits(int(value), bits)]
+        else:
+            self.ls = [s if isinstance(s, FeedbackSignal) else FeedbackSignal(s) for s in value]
+
+    def connect(self, vec):
+        for my_sig, other_sig in zip_all(self.ls, vec.ls):
+            my_sig.connect(other_sig)
+                    
 
 def intToBits(num, bits):
     return (((num >> i) & 1) == 1 for i in xrange(bits))
@@ -261,9 +281,9 @@ def If(pred, cons, alt):
     return [(pred & c) | (Not(pred) & a) for c, a in zip_all(cons, alt)]
          
      
-def SRLatch(s, r):
-    q_fb = FeedbackSignal(not r.value)
-    nq_fb = FeedbackSignal(not s.value)
+def SRLatch(s, r, init = False):
+    q_fb = FeedbackSignal(init)
+    nq_fb = FeedbackSignal(not init)
     nq = Nor(s, q_fb)
     q = Nor(r, nq_fb)
     q_fb.connect(q)
@@ -283,18 +303,25 @@ def DFlipFlop(d, clk):
 
 def Decoder(a):
     if len(a) == 1:
-        return [~a[-1], a[-1]]
+        return Vector([~a[-1], a[-1]])
     else:
         sub = Decoder(a[:-1])
         not_a = ~a[-1]
-        return [not_a & d for d in sub] + [a[-1] & d for d in sub]
+        return Vector([not_a & d for d in sub] + [a[-1] & d for d in sub])
     
     
-def Memory(mem_addr, data, isWrite):
-    wordlines = Decoder(mem_addr)
+def Memory(mem_addr, data, isWrite, init=[]):
+    collines = Decoder(mem_addr[len(mem_addr)/2:])
+    rowlines = Decoder(mem_addr[:len(mem_addr)/2])
+    
+    wordlines = [c & r for c in collines for r in rowlines]
+    
     sr = [(isWrite & d, isWrite & ~d) for d in data]
+    initvalues = (init + [0] * (len(wordlines) - len(init)))
 
-    q_outs = [[SRLatch(mem_wr & s, mem_wr & r)[0] & mem_wr for s, r in sr] for mem_wr in wordlines]
+    q_outs = [[SRLatch(access & s, access & r, b)[0] & access 
+               for ((s, r), b) in zip_all(sr, list(intToBits(val, len(sr))))] 
+              for access, val in zip_all(wordlines, initvalues)]
     return Vector([Or(*l) for l in zip(*q_outs)])
         
     
@@ -326,3 +353,7 @@ def calcAreaDelay(inputs):
         i += 1
     return len(set().union(*levels)), i-1
 
+
+def FlipFlops(dls, clk):
+    qs, _nqs = zip_all(*(DFlipFlop(d, clk) for d in dls))
+    return Vector(qs)
