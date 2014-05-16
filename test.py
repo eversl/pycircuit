@@ -4,21 +4,23 @@ Created on Feb 6, 2014
 @author: matrix1
 '''
 import unittest
-from PyCircuit import Signal, FullAdder, SRLatch, DLatch, DFlipFlop, Not, \
+from PyCircuit import TestSignal, FullAdder, SRLatch, DLatch, DFlipFlop, \
     intToSignals, signalsToInt, RippleCarryAdder, Negate, Vector, Multiplier, \
-    Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder
-from MSP430 import CPU
+    Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder,\
+    TestVector
+from MSP430 import CPU, CodeSequence, N, R, B
+import MSP430
 
 
 class Test(unittest.TestCase):
     def test_str(self):
-        self.assertEqual(str(Signal(0)), 'Signal(False)')
-        self.assertEqual(str(Signal(1)), 'Signal(True)') 
+        self.assertEqual(str(TestSignal(0)), 'TestSignal(False)')
+        self.assertEqual(str(TestSignal(1)), 'TestSignal(True)') 
         self.assertEqual(str(Vector(-10)), 'Vector(-10, 16)') 
 
     def test_SRLatch(self):    
-        r = Signal()
-        s = Signal()
+        r = TestSignal()
+        s = TestSignal()
         signals = SRLatch(s=s, r=r)
         self.assertEquals([sig.value for sig in signals], [False, True])
         s.set()
@@ -35,8 +37,8 @@ class Test(unittest.TestCase):
 
 
     def test_DLatch(self):
-        d = Signal()
-        e = Signal(True)    
+        d = TestSignal()
+        e = TestSignal(True)    
         signals = DLatch(d, e)
         self.assertEquals([sig.value for sig in signals], [False, True])
         d.set()
@@ -54,8 +56,8 @@ class Test(unittest.TestCase):
 
 
     def test_DFlipFlop(self):
-        d = Signal()
-        clk = Signal()    
+        d = TestSignal()
+        clk = TestSignal()    
         signals = DFlipFlop(d, clk)
         self.assertEquals([sig.value for sig in signals], [False, True])
         d.set()
@@ -68,11 +70,21 @@ class Test(unittest.TestCase):
         self.assertEquals([sig.value for sig in signals], [True, False])
         clk.set()
         self.assertEquals([sig.value for sig in signals], [False, True])
+        d.set()
+        self.assertEquals([sig.value for sig in signals], [False, True])
         clk.reset()
+        self.assertEquals([sig.value for sig in signals], [False, True])
+        clk.set()
+        self.assertEquals([sig.value for sig in signals], [True, False])
+        d.reset()
+        self.assertEquals([sig.value for sig in signals], [True, False])
+        clk.reset()
+        self.assertEquals([sig.value for sig in signals], [True, False])
+        clk.set()
         self.assertEquals([sig.value for sig in signals], [False, True])
  
     def test_FullAdder(self):
-        a, b, c = Signal(), Signal(), Signal()
+        a, b, c = TestSignal(), TestSignal(), TestSignal()
         signals = FullAdder(a, b, c)
         
         self.assertEquals([sig.value for sig in signals], [False, False])
@@ -102,7 +114,7 @@ class Test(unittest.TestCase):
                 self.assertEqual(sum, a + b)
                 self.assertEqual(c_out.value, a < 0)
 
-    def test_KoggeStoneAdder(self):
+    def _test_KoggeStoneAdder(self):
         for a in xrange(-256, 255, 67):
             for b in xrange(-22756, 32767, 1453):
                 als = intToSignals(a, 16)
@@ -113,8 +125,8 @@ class Test(unittest.TestCase):
                 self.assertEqual(c_out.value, a < 0)
 
     def test_arith(self):
-        self.assertEquals(int(-Vector(10)), -10)
-        self.assertEquals(int(Vector(10) + Vector(-24)), 10 + -24)
+        self.assertEquals(int(-TestVector(10)), -10)
+        self.assertEquals(int(TestVector(10) + TestVector(-24)), 10 + -24)
         self.assertEquals(int(Vector(10) - Vector(24)), 10 - 24)
         self.assertEquals(int(Vector(0x0f) | Vector(0xf0)), 0x0f | 0xf0)
         self.assertEquals(int(Vector(0x0e) & Vector(0x03)), 0x0e & 0x03)
@@ -132,8 +144,8 @@ class Test(unittest.TestCase):
 
     def test_Multiplier(self):
         bitlen = 8
-        a = Vector(0, bitlen)
-        b = Vector(0, bitlen)
+        a = TestVector(0, bitlen)
+        b = TestVector(0, bitlen)
         m = Vector(Multiplier(a, b, False))
         print calcAreaDelay(a[:] + b[:])
         self.assertEqual(len(m), bitlen * 2)
@@ -145,36 +157,36 @@ class Test(unittest.TestCase):
     
 
     def test_Decoder(self):
-        a = Vector(0, 8)
+        a = TestVector(0, 8)
         d = Decoder(a)
         for i in xrange(2 ** 8):
             a[:] = i
             self.assertEqual(signalsToInt(Vector(d), False), 2 ** i)
 
 
-    def test_Memory(self):
-        a = Vector(0, 8)
-        d = Vector(0, 16)
-        mem_wr = Signal()
+    def _test_Memory(self):
+        a = TestVector(0, 8)
+        d = TestVector(0, 16)
+        mem_wr = TestVector(0,1)
         q = Memory(a, d, mem_wr)
         print calcAreaDelay(a)
         print calcAreaDelay(d)
-        print calcAreaDelay([mem_wr])
+        print calcAreaDelay(mem_wr[:])
         for i in xrange(2 ** 8):
             d[:] = i
             a[:] = i
-            mem_wr.set()
-            mem_wr.reset()
+            mem_wr[0].set()
+            mem_wr[0].reset()
         for i in xrange(2 ** 8):
             a[:] = i
             self.assertEqual(int(q), i)
 
     def test_RegisterFile(self):
-        addr1 = Vector(0, 3)
-        addr2 = Vector(0, 3)
-        addr_w = Vector(0, 3)
-        data_w = Vector(0, 16)
-        clk = Signal()
+        addr1 = TestVector(0, 3)
+        addr2 = TestVector(0, 3)
+        addr_w = TestVector(0, 3)
+        data_w = TestVector(0, 16)
+        clk = TestSignal()
         data1, data2 = RegisterFile(addr1, addr2, addr_w, data_w, clk)
         for i in xrange(2 ** 3):
             data_w[:] = i
@@ -187,7 +199,7 @@ class Test(unittest.TestCase):
             self.assertEqual(int(data1), i)
             self.assertEqual(int(data2), (i + 1) % 2**3)
             
-    def test_AdderDelay(self):
+    def _test_AdderDelay(self):
         for bitlen in xrange(2, 65):
             a = Vector(-1, bitlen)
             b = Vector(-1, bitlen)
@@ -205,15 +217,44 @@ class Test(unittest.TestCase):
             self.assertGreater(m_ad[1], n_ad[1]) 
             
     
-    def test_CPU(self):
-        clk = Signal()
-        debuglines = CPU(clk)
+    def test_MSP430RegisterFile(self):
+        clk = TestSignal()
+        reset = TestSignal()
+        src_reg = Vector(0,4)
+        dst_reg = TestVector(0,4)
+        src_incr = TestVector(0,1)
+        dst_in = TestVector(0, 16)
+        dst_wr = TestSignal(True)
+        bw = TestSignal(0)
+        pc_incr = TestSignal()
+        src_out, dst_out, _ = MSP430.RegisterFile(pc_incr, src_reg, dst_reg, src_incr, dst_in, dst_wr, bw, clk, reset)
         
-        for _ in xrange(10):
+        print 'src_out', src_out
+        print 'dst_out', dst_out
+        for r in xrange(16):
+            dst_reg[:] = r
+            dst_in[:] = r + 1
             clk.set()
             clk.reset()
+            print 'src_out', src_out
+            print 'dst_out', dst_out
+
+    def test_MSP430(self):
+        clk = TestSignal()
+        code_sequence = CodeSequence()
+        code_sequence.MOV(~R(0), R(8), B)
+        code_sequence.ADD(N(5000), R(4))
+        code_sequence.ADDC(R(4), R(5)+20)
+        code_sequence.BIS(R(5)+20, R(6))
+
+        debuglines = CPU(code_sequence.code, clk)
+        
+        for _ in xrange(10):
+            print '-' * 30
             for k in debuglines:
                 print k, ':', debuglines[k]
+            clk.set()
+            clk.reset()
         self.fail('Debug')
             
 if __name__ == "__main__":

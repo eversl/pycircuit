@@ -3,7 +3,11 @@ Created on Feb 4, 2014
 
 @author: leone
 '''
+import inspect
+import traceback
+from collections import Counter
 
+sim_steps = 0
 
 def zip_all(*args):
     for i in xrange(0, len(args)):
@@ -13,10 +17,34 @@ def zip_all(*args):
     return zip(*args)
        
     
+def simulate(signals, recur=Counter()):
+    global sim_steps
+    sim_steps += 1
+    next_signals = set()
+    next_recur = Counter()
+    for sig in signals:
+        if isinstance(sig, FeedbackSignal):
+            next_recur.update(sig)
+        next_signals.update(sig.eval())
+    if len(next_signals) > 0: 
+        next_recur.update(recur)
+        over_limit = False
+        for e in (e for e in next_recur if next_recur[e] > 10):
+            over_limit = True
+            print "FeedbackSignal %i (%i times)" % (id(e), next_recur[e]) 
+            for f in e.stack[1:4]:
+                print 'File "%s", line %i, in %s' % f[1:4]
+                for l in f[4]:
+                    print l,
+        if over_limit:
+            raise Exception("Too many iterations")
+        simulate(next_signals, next_recur)    
+    
 class Signal(object):
-    __slots__ = ['fanout', 'value']
+    __slots__ = ['fanout', 'value', 'args']
     def __init__(self, initval=False):
-        self.value = bool(initval)
+        self.args = []
+        self.value = initval.value if isinstance(initval, Signal) else bool(initval)
         self.fanout = []
         
     def __xor__(self, other):
@@ -26,9 +54,9 @@ class Signal(object):
         return Or(self, other)
     
     def __and__(self, other):
-        try:
+        if isinstance(other, Vector):
             return Vector(And(self, o) for o in other)
-        except TypeError:
+        else:
             return And(self, other)
     
     def __invert__(self):
@@ -39,37 +67,63 @@ class Signal(object):
 
     def __repr__(self):
         return '{0}({1})'.format(type(self).__name__,self.value)
-        
-    def set(self, value=True):
-        if value != self.value:
-            self.value = value
-            for c in self.fanout:
-                c()
     
+    def __len__(self):
+        return 1
+        
+    def __iter__(self):
+        return iter([self])
+        
+    def simulate(self):
+        simulate([self])
+            
+    def eval(self):
+        value = self.func(*(arg.value for arg in self.args))
+        if self.value == value:
+            return []
+        else:
+            self.value = value
+            return self.fanout
+
+        
+class TestSignal(Signal):
+    def set(self, value=True):
+        self.set_value = value.value if isinstance(value, Signal) else value
+        self.simulate()
+                
     def reset(self):
         self.set(False)
+        
+    def func(self):
+        return self.set_value
         
         
 class FeedbackSignal(Signal):
     def connect(self, sig):
-        self.sig = sig
+        self.stack = inspect.currentframe().f_back
+#         self.stack = inspect.stack()
+        self.args = [sig]
         sig.fanout.append(self)
-        self()
+        self.simulate()
+        
+    def func(self, val):
+        return val
     
-    def __call__(self):
-        self.set(self.sig.value)
-
 class Vector():
-    def __init__(self, value, bits=16):
+    def __init__(self, value, bits=16, enum=None):
+        self.enum = enum
         try:
             value = (s for s in value)
         except TypeError:
-            self.ls = intToSignals(int(value), bits)
+            self.ls = [value] if isinstance(value, Signal) else intToSignals(int(value), bits)
         else:
             self.ls = [s if isinstance(s, Signal) else Signal(s) for s in value]
         
     def __repr__(self):
-        return 'Vector({0}, {1})'.format(int(self), len(self))
+        if self.enum:
+            return 'Vector(%s)' % (tuple(k for k in self.enum if self.enum[k] == self))
+        else:
+            return 'Vector({0}, {1})'.format(int(self), len(self))
 
     def __len__(self):
         return len(self.ls)
@@ -81,10 +135,10 @@ class Vector():
         return iter(self.ls)
         
     def __add__(self, other):
-        return Vector(RippleCarryAdder(self, other)[0])
+        return Vector(KoggeStoneAdder(self, other)[0])
         
     def __sub__(self, other):
-        return Vector(RippleCarryAdder(self, -other)[0])
+        return Vector(KoggeStoneAdder(self, -other)[0])
         
     def __mul__(self, other):
         return Vector(Multiplier(self, other))
@@ -132,6 +186,32 @@ class Vector():
     def __int__(self):
         return signalsToInt(self.ls)
         
+    def __lt__(self, other):
+        return int(self) < int(other)
+    def __le__(self, other):
+        return int(self) <= int(other)
+    def __eq__(self, other):
+        return isinstance(other, Vector) and int(self) == int(other)
+    def __ne__(self, other):
+        return int(self) != int(other)
+    def __gt__(self, other):
+        return int(self) > int(other)
+    def __ge__(self, other):
+        return int(self) >= int(other)
+    def __hash__(self):
+        return int(self)
+
+
+class TestVector(Vector):
+    def __init__(self, value, bits=16):
+        try:
+            value = (s for s in value)
+        except TypeError:
+            self.ls = [value] if isinstance(value, TestSignal) else [TestSignal(b) for b in intToBits(int(value), bits)]
+        else:
+            self.ls = [s if isinstance(s, TestSignal) else TestSignal(s) for s in value]
+
+    
     def __setitem__(self, key, value):
         if isinstance(key, slice):
             signals = self.ls[key]
@@ -140,11 +220,16 @@ class Vector():
         else:
             bits = value    
         for b, s in zip(bits, signals): 
-            s.set(b)
-
+            s.set_value = b.value if isinstance(b, Signal) else b
+        simulate(signals)
+            
 
 class FeedbackVector(Vector):
-    def __init__(self, value, bits=16):
+    def __init__(self, value, bits=16, state=None):
+        if isinstance(value, Vector) and value.enum:
+            self.enum = value.enum
+        else:
+            self.enum = state
         try:
             value = (s for s in value)
         except TypeError:
@@ -157,6 +242,11 @@ class FeedbackVector(Vector):
             my_sig.connect(other_sig)
                     
 
+def EnumVector(enum, value, bits=16):
+    return Vector(value, bits, enum=enum)
+        
+        
+        
 def intToBits(num, bits):
     return (((num >> i) & 1) == 1 for i in xrange(bits))
 
@@ -181,11 +271,8 @@ class CircuitOper(Signal):
         
         for arg in args:
             arg.fanout.append(self)
-        self.__call__()
-        
-    def __call__(self):
-        self.set(self.func(*(arg.value for arg in self.args)))
-        
+        self.simulate()
+                
     def func(self):
         raise NotImplementedError()
 
@@ -208,6 +295,44 @@ class Not(CircuitOper):
 class Nor(CircuitOper):
     def func(self, a, b):
         return not (a | b)
+
+
+
+def Enum(*args):
+    if len(args) == 1:
+        try:
+            kv = [(k, v) for v, k in args[0].iteritems()]
+        except:
+            kv = list(enumerate(args))
+    else:
+        kv = list(enumerate(args))      
+    bits = 0
+    maxarg = max(k for k, _ in kv)
+    while maxarg >= (1 << bits): bits += 1
+    state = {k: Vector(v, bits) for v,k in kv}
+    return {k: EnumVector(state, state[k]) for k in state}
+
+
+def Case(state, cases, default = None):
+    for k in cases.keys():
+        if not (isinstance(k, Vector) or isinstance(k, Signal)):
+            v = cases[k]
+            for kk in k:
+                cases[kk] = v
+            del cases[k]
+    zip_all(state, *cases.keys())
+    length = len(state)
+    res_length = len(cases.values()[0])
+    if default == None:
+        default = Vector(0, res_length)
+    zip_all(default, *cases.values())
+    alts = []
+    for i in xrange(2**length):
+        try:
+            alts.append(cases[Vector(i,length)])
+        except KeyError: 
+            alts.append(default) 
+    return Multiplexer(state, alts)
 
 
 def HalfAdder(a, b):
@@ -278,7 +403,10 @@ def Multiplier(als, bls, signed=True):
      
      
 def If(pred, cons, alt):
-    return [(pred & c) | (Not(pred) & a) for c, a in zip_all(cons, alt)]
+    if isinstance(pred, Vector):
+        pred = Or(*pred[:])
+    npred = Not(pred)
+    return Vector([(pred & c) | (npred & a) for c, a in zip_all(cons, alt)])
          
      
 def SRLatch(s, r, init = False):
@@ -296,13 +424,14 @@ def DLatch(d, e):
 
 
 def DFlipFlop(d, clk):
-    master = DLatch(d=d, e=clk)
-    slave = DLatch(d=master[0], e=Not(clk))
+    nclk = Not(clk)
+    master = DLatch(d=d, e=nclk)
+    slave = DLatch(d=master[0], e=clk)
     return slave
 
 
 def Decoder(a):
-    if len(a) == 1:
+    if len(a) <= 1:
         return Vector([~a[-1], a[-1]])
     else:
         sub = Decoder(a[:-1])
@@ -310,7 +439,8 @@ def Decoder(a):
         return Vector([not_a & d for d in sub] + [a[-1] & d for d in sub])
     
     
-def Memory(mem_addr, data, isWrite, init=[]):
+def Memory(mem_addr, data, isWrite_v, init=[]):
+    isWrite = isWrite_v[0]
     collines = Decoder(mem_addr[len(mem_addr)/2:])
     rowlines = Decoder(mem_addr[:len(mem_addr)/2])
     
@@ -355,5 +485,5 @@ def calcAreaDelay(inputs):
 
 
 def FlipFlops(dls, clk):
-    qs, _nqs = zip_all(*(DFlipFlop(d, clk) for d in dls))
+    qs, _nqs = zip_all(*tuple(DFlipFlop(d, clk) for d in dls))
     return Vector(qs)
