@@ -3,9 +3,9 @@ Created on Mar 21, 2014
 
 @author: leonevers
 '''
-from PyCircuit import Vector, Signal, Memory, Decoder, DFlipFlop, Multiplexer, \
-    FlipFlops, FeedbackVector, If, zip_all, FeedbackSignal, Or, calcAreaDelay, \
-    Enum, Case, EnumVector, KoggeStoneAdder, Negate, And, signalsToInt
+from PyCircuit import Vector, Signal, Memory, Decoder, FlipFlops, FeedbackVector, If, zip_all, FeedbackSignal, Or, \
+    calcAreaDelay, \
+    Enum, Case, EnumVector, KoggeStoneAdder, Negate, And, signalsToInt, DecimalAdder
 
 
 def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, dst_in, sr_in, dst_wr, bw, clk, reset):
@@ -51,7 +51,8 @@ def decodeInstr(word):
     inst_type = EnumVector(I_TYPES, If(word[15] | (~word[15] & word[14]), I_TYPES['IT_TWO'],
                                        If(word[13], I_TYPES['IT_JUMP'], I_TYPES['IT_ONE'])))
     instr = EnumVector(INSTRS, If(word[15] | (~word[15] & word[14]), Vector(word[12:] + [Signal()]),
-                                  If(word[13], Vector(word[10:13] + I_TYPES['IT_JUMP'][:]), Vector(word[7:10] + I_TYPES['IT_ONE'][:]))))
+                                  If(word[13], Vector(word[10:13] + I_TYPES['IT_JUMP'][:]),
+                                     Vector(word[7:10] + I_TYPES['IT_ONE'][:]))))
     dst_reg = Vector(word[0:4])
     src_reg = Case(inst_type, {I_TYPES['IT_TWO']: Vector(word[8:12]),
                                I_TYPES['IT_ONE']: dst_reg})
@@ -147,23 +148,22 @@ TWO_INSTR = {'MOV': 0b0100,
              'XOR': 0b1110,
              'AND': 0b1111}
 
-ONE_INSTR = {'RRC':  0b000,
+ONE_INSTR = {'RRC': 0b000,
              'SWPB': 0b001,
-             'RRA':  0b010,
-             'SXT':  0b011,
+             'RRA': 0b010,
+             'SXT': 0b011,
              'PUSH': 0b100,
              'CALL': 0b101,
              'RETI': 0b110}
 
 JMP_INSTR = {'JNZ': 0b000,
-             'JZ' : 0b001,
+             'JZ': 0b001,
              'JNC': 0b010,
-             'JC' : 0b011,
-             'JN' : 0b100,
+             'JC': 0b011,
+             'JN': 0b100,
              'JGE': 0b101,
-             'JL' : 0b110,
+             'JL': 0b110,
              'JMP': 0b111}
-
 
 INSTRS = Enum(dict(TWO_INSTR.items() +
                    [(i, ONE_INSTR[i] + (signalsToInt(I_TYPES['IT_ONE'], False) << 3)) for i in ONE_INSTR] +
@@ -179,16 +179,19 @@ class CodeSequence(object):
         if name in TWO_INSTR:
             def fn(src, dst, b=False):
                 return self.two_operand_instr(TWO_INSTR[name], src, dst, b)
+
             return fn
 
         elif name in ONE_INSTR:
             def fn(dst, b=False):
                 return self.one_operand_instr(ONE_INSTR[name], dst, b)
+
             return fn
 
         elif name in JMP_INSTR:
             def fn(label):
                 return self.jmp_instr(JMP_INSTR[name], label)
+
             return fn
         else:
             raise AttributeError
@@ -213,7 +216,7 @@ class CodeSequence(object):
         if dst.mode == M_INDEX or (dst.mode == M_INCR and dst.reg == R_PC):
             self.code.append(dst.index)
         new_len = len(self.code)
-        duration = {M_DIRECT: 1, M_INDEX: 3, M_INDIRECT: 4, M_INCR: 3}[dst.mode]
+        duration = {M_DIRECT: 1, M_INDEX: 4, M_INDIRECT: 4, M_INCR: 3}[dst.mode]
         return new_len - old_len, duration
 
 
@@ -223,75 +226,88 @@ class CodeSequence(object):
         return 1, duration
 
 
-
-
-def DecimalAdd(src, dst_in, c_in):
-    nibbles = [(Vector(src[i:i + 4]), Vector(dst_in[i:i + 4])) for i in xrange(0, len(src), 4)]
-    src_0, dst_in_0 = nibbles[0]
-    add_out_0, c_out = KoggeStoneAdder(src_0, dst_in_0)
-    adjust = Vector(add_out_0) > Vector(6, 4)
-
-    dst_out = dst_in
-
-    return dst_out, {'c': c_out, 'n': Signal(0), 'z': Signal(0), 'v': Signal(0)}
-
-
 def alu(instr, src, dst_in, flags_in, bw):
-    def calc_flags(dst_out):
-        n_out = dst_out[-1]  # negative equals sign bit
-        z_out = And(*(~(a ^ b) for a, b in zip_all(Vector(dst_out), Vector(0, len(dst_out)))))
+    def calc_alu(fn, *args):
+        out, flags_upd = fn(*args)
+        n_out = out[-1]  # negative equals sign bit
+        z_out = And(*(~(a ^ b) for a, b in zip_all(Vector(out), Vector(0, len(out)))))
         c_out = ~z_out
         v_out = Signal(0)
         src[-1] & dst_in[-1]
-        return {'c': c_out, 'n': n_out, 'z': z_out, 'v': v_out}
+        flags = {'c': c_out, 'n': n_out, 'z': z_out, 'v': v_out}
+        flags.update(flags_upd)
+        return out, flags
+
+
+    def do_mov(src):
+        return src, flags_in
 
     def do_add_sub(als, bls, c, instr):
         bls = Case(instr, {(INSTRS['ADD'], INSTRS['ADDC']): bls,
                            (INSTRS['SUB'], INSTRS['SUBC'], INSTRS['CMP']): Vector(Negate(bls))})
         sls, c_out = KoggeStoneAdder(als, bls, c)
         v_out = (als[-1] ^ sls[-1]) & (bls[-1] ^ sls[-1])
-        flags = calc_flags(sls)
-        flags.update({'c': c_out, 'v': v_out})
-        return Vector(sls), flags
+        return (Vector(sls)), {'c': c_out, 'v': v_out}
+
+    def do_dadd(als, bls, c):
+        sls, c_out = DecimalAdder(als, bls, c)
+        out = Vector(sls)
+        return out, {'c': c_out}
 
     def do_and(src, dst_in):
-        dst_out = src & dst_in
-        return dst_out, calc_flags(dst_out)
+        out = src & dst_in
+        return out, {}
 
     def do_xor(src, dst_in):
-        dst_out = src ^ dst_in
-        flags = calc_flags(dst_out)
-        flags.update({'v': src[-1] & dst_in[-1]})
-        return dst_out, flags
+        out = src ^ dst_in
+        return out, {'v': src[-1] & dst_in[-1]}
 
-    def do_rra(in_val):
-        out_val = Vector(in_val[1:] + [in_val[-1]])
-        flags = calc_flags(out_val)
-        flags.update({'c': in_val[0]})
-        return out_val, flags
+    def do_bic(src, dst_in):
+        out = ~src & dst_in
+        return out, flags_in
+
+    def do_bis(src, dst_in):
+        out = src | dst_in
+        return out, flags_in
+
+    def do_rrot(in_val, msb):
+        out = Vector(in_val[1:] + [msb])
+        return out, {'c': in_val[0],
+                     'v': ~in_val[-1] & msb}
+
+    def do_swpb(src):
+        out = Vector(src[8:16] + src[0:8]) if len(src) == 16 else src
+        return out, flags_in
+
+    def do_sxt(src):
+        out = Vector(src[:7] + ([src[7]] * (len(src) - 7)))
+        return out, {}
 
     def op(src, dst_in):
         c_in = flags_in['c']
-        dst_out, flags_out = Case(instr, {# Two arg instrs
-                                          INSTRS['MOV']: (src, flags_in),
-                                          (INSTRS['ADD'], INSTRS['ADDC'], INSTRS['SUB'], INSTRS['SUBC'], INSTRS['CMP']):
-                                              do_add_sub(src, dst_in,
+        dst_out, flags_out = Case(instr, {  # Two arg instrs
+                                            INSTRS['MOV']: calc_alu(do_mov, src),
+                                            (INSTRS['ADD'], INSTRS['ADDC'], INSTRS['SUB'], INSTRS['SUBC'],
+                                             INSTRS['CMP']):
+                                                calc_alu(do_add_sub, src, dst_in,
                                                          Case(instr,
                                                               {(INSTRS['ADD'], INSTRS['SUB'], INSTRS['CMP']): Signal(),
                                                                (INSTRS['ADDC'], INSTRS['SUBC']): c_in}),
                                                          instr),
-                                          INSTRS['BIC']: (~src & dst_in, flags_in),
-                                          INSTRS['BIS']: (src | dst_in, flags_in),
-                                          (INSTRS['AND'], INSTRS['BIT']): do_and(src, dst_in),
-                                          INSTRS['XOR']: do_xor(src, dst_in),
-                                          INSTRS['DADD']: (DecimalAdd(src, dst_in, c_in)[0], flags_in),
-                                          # One arg instrs
-                                          INSTRS['RRA']: do_rra(src),
-                                          INSTRS['RRC']: (~src & dst_in, flags_in),
-                                          INSTRS['SWPB']: (~src & dst_in, flags_in),
-                                          INSTRS['SXT']: (~src & dst_in, flags_in),
+                                            INSTRS['BIC']: calc_alu(do_bic, src, dst_in),
+                                            INSTRS['BIS']: calc_alu(do_bis, src, dst_in),
+                                            (INSTRS['AND'], INSTRS['BIT']): calc_alu(do_and, src, dst_in),
+                                            INSTRS['XOR']: calc_alu(do_xor, src, dst_in),
+                                            INSTRS['DADD']: calc_alu(do_dadd, src, dst_in, c_in),
+                                            # One arg instrs
+                                            (INSTRS['RRA'], INSTRS['RRC']): calc_alu(do_rrot, src,
+                                                                                     Case(instr,
+                                                                                          {INSTRS['RRA']: src[-1],
+                                                                                           INSTRS['RRC']: c_in})),
+                                            INSTRS['SWPB']: calc_alu(do_swpb, src),
+                                            INSTRS['SXT']: calc_alu(do_sxt, src),
 
-                                          })
+                                            })
         return Case(instr, {(INSTRS['CMP'], INSTRS['BIT']): dst_in}, dst_out), flags_out
 
     dst_out, flags_out = Case(bw, {
@@ -336,7 +352,7 @@ def CPU(mem_init, clk):
                             STATES['DST_PUT']: prev_idx_addr})
 
     mem_out = Memory(mem_addr[1:8], prev_mem_in,
-                      Case(state, {STATES['DST_PUT']: Signal(True)}), mem_init)
+                     Case(state, {STATES['DST_PUT']: Signal(True)}), mem_init)
 
     instr_word = Case(state, {STATES['FETCH']: mem_out}, default=prev_instr_word)
     prev_instr_word.connect(FlipFlops(instr_word, clk))
@@ -356,27 +372,33 @@ def CPU(mem_init, clk):
                           })
 
     src_out, dst_out, regs, src_incr = RegisterFile(pc_incr=Case(state, {STATES['FETCH']: Signal(True),
-                                                               STATES['SRC_IDX']: Signal(True),
-                                                               STATES['DST_IDX']: Signal(True)}),
-                                          src_reg=src_reg,
-                                          dst_reg=dst_reg,
-                                          src_incr=Case(state, {STATES['SRC_INCR']: Signal(True)}),
-                                          dst_in=Case(inst_bw, {BYTE_WORD['BYTE']: Vector(dst_in[:8] + [Signal()] * 8),
-                                                                BYTE_WORD['WORD']: dst_in}),
-                                          sr_in=sr_in,
-                                          dst_wr=do_alu & Case(inst_type, {I_TYPES['IT_TWO']:
-                                                               Case(a_d, {DST_M['M_DIRECT']: Signal(True)}),
-                                                                           I_TYPES['IT_ONE']:
-                                                               Case(a_s, {SRC_M['M_DIRECT']: Signal(True)})}),
-                                          bw=inst_bw,
-                                          clk=clk,
-                                          reset=reset)
+                                                                         STATES['SRC_IDX']: Signal(True),
+                                                                         STATES['DST_IDX']: Signal(True)}),
+                                                    src_reg=src_reg,
+                                                    dst_reg=dst_reg,
+                                                    src_incr=Case(state, {STATES['SRC_INCR']: Signal(True)}),
+                                                    dst_in=Case(inst_bw,
+                                                                {BYTE_WORD['BYTE']: Vector(dst_in[:8] + [Signal()] * 8),
+                                                                 BYTE_WORD['WORD']: dst_in}),
+                                                    sr_in=sr_in,
+                                                    dst_wr=do_alu & Case(inst_type, {I_TYPES['IT_TWO']:
+                                                                                         Case(a_d, {
+                                                                                             DST_M['M_DIRECT']: Signal(
+                                                                                                 True)}),
+                                                                                     I_TYPES['IT_ONE']:
+                                                                                         Case(a_s, {
+                                                                                             SRC_M['M_DIRECT']: Signal(
+                                                                                                 True)})}),
+                                                    bw=inst_bw,
+                                                    clk=clk,
+                                                    reset=reset)
     feedback_src_out.connect(src_out)
     pc_reg.connect(regs[0])
 
     idx_addr = Case(state, {STATES['SRC_IDX']: src_out + mem_out,
                             STATES['DST_IDX']: dst_out + mem_out,
-                            STATES['SRC_INCR']: src_incr}, default=prev_idx_addr)
+                            STATES['SRC_INCR']: src_incr,
+                            STATES['SRC_INDIRECT']: src_out}, default=prev_idx_addr)
     prev_idx_addr.connect(FlipFlops(idx_addr, clk))
 
     src = Case(state, {STATES['FETCH']: src_out,
@@ -412,9 +434,10 @@ def CPU(mem_init, clk):
     dst_in.connect(alu_out)
     sr_in.connect(status_reg_out)
 
-    next_dst_state = Case(inst_type, {I_TYPES['IT_TWO']:  # TODO: remove IT_TWO condition if this is only used for IT_TWO
-                                          Case(a_d, {DST_M['M_DIRECT']: STATES['FETCH'],
-                                                     DST_M['M_INDEX']: STATES['DST_IDX']})})
+    next_dst_state = Case(inst_type,
+                          {I_TYPES['IT_TWO']:  # TODO: remove IT_TWO condition if this is only used for IT_TWO
+                               Case(a_d, {DST_M['M_DIRECT']: STATES['FETCH'],
+                                          DST_M['M_INDEX']: STATES['DST_IDX']})})
     next_state = EnumVector(STATES,
                             Case(state, {STATES['FETCH']:
                                              Case(inst_type, {I_TYPES['IT_TWO']:
@@ -429,11 +452,10 @@ def CPU(mem_init, clk):
                                                                              SRC_M['M_INDIRECT']: STATES[
                                                                                  'SRC_INDIRECT'],
                                                                              SRC_M['M_INDEX']: STATES['SRC_IDX']})}),
-                                         STATES['SRC_INCR']: Case(inst_type, {I_TYPES['IT_TWO']: next_dst_state,
-                                                                              I_TYPES['IT_ONE']: STATES['DST_PUT']}),
-                                         STATES['SRC_INDIRECT']: next_dst_state,
+                                         (STATES['SRC_INCR'], STATES['SRC_INDIRECT'], STATES['SRC_GET']):
+                                             Case(inst_type, {I_TYPES['IT_TWO']: next_dst_state,
+                                                              I_TYPES['IT_ONE']: STATES['DST_PUT']}),
                                          STATES['SRC_IDX']: STATES['SRC_GET'],
-                                         STATES['SRC_GET']: next_dst_state,
                                          STATES['DST_IDX']: STATES['DST_GET'],
                                          STATES['DST_GET']: STATES['DST_PUT'],
                                          STATES['DST_PUT']: STATES['FETCH']}))

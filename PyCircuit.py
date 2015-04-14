@@ -4,7 +4,6 @@ Created on Feb 4, 2014
 @author: leone
 '''
 import inspect
-import traceback
 from collections import Counter
 
 sim_steps = 0
@@ -57,8 +56,7 @@ def simulate(signals, recur=None):
         simulate(next_signals, recur)
     else:
         if len(recur) > 0:
-            simulate(s for s in recur if recur[s] >=8)
-
+            simulate(s for s in recur if recur[s] >= 8)
 
 
 class Signal(object):
@@ -96,6 +94,9 @@ class Signal(object):
     def __iter__(self):
         return iter([self])
 
+    def func(self, *args):
+        raise NotImplementedError()
+
     def simulate(self):
         simulate([self])
 
@@ -123,6 +124,10 @@ class TestSignal(Signal):
         for _ in xrange(n):
             self.set()
             self.reset()
+            if CPU_state is not None:
+                print "==============================="
+                for k in CPU_state:
+                    print k, ":", CPU_state[k]
 
 
 class FeedbackSignal(Signal):
@@ -334,6 +339,7 @@ def signalsToInt(ls, signed=True):
     return num
 
 
+# noinspection PyAbstractClass
 class CircuitOper(Signal):
     def __init__(self, *args):
         Signal.__init__(self)
@@ -342,9 +348,6 @@ class CircuitOper(Signal):
         for arg in args:
             arg.fanout.append(self)
         self.simulate()
-
-    def func(self):
-        raise NotImplementedError()
 
 
 class And(CircuitOper):
@@ -478,6 +481,20 @@ def KoggeStoneAdder(als, bls, c=Signal()):
         s = a ^ b ^ c
         sls.append(s)
     return sls, cls[-1]
+
+
+def DecimalAdder(src, dst_in, c_in):
+    nibbles = [(Vector(src[i:i + 4] + [Signal(0)]), Vector(dst_in[i:i + 4] + [Signal(0)])) for i in
+               xrange(0, len(src), 4)]
+    dst_out = []
+    for src_n, dst_n in nibbles:
+        sum_n, c_out = KoggeStoneAdder(src_n, dst_n, c_in)
+        adjusted, adc_out = KoggeStoneAdder(sum_n, Vector(-10, 5))
+
+        c_in = ~adjusted[-1]
+        dst_out.append(If(c_in, adjusted[:-1], sum_n[:-1]))
+
+    return [dd for d in dst_out for dd in d], c_in
 
 
 def Negate(als):

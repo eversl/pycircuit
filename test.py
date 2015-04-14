@@ -4,10 +4,11 @@ Created on Feb 6, 2014
 @author: matrix1
 '''
 import unittest
+
 from PyCircuit import TestSignal, FullAdder, SRLatch, DLatch, DFlipFlop, \
     intToSignals, signalsToInt, RippleCarryAdder, Negate, Vector, Multiplier, \
     Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder, \
-    TestVector, Signal
+    TestVector, Signal, DecimalAdder
 from MSP430 import CPU, CodeSequence, N, R, B
 import MSP430
 
@@ -127,6 +128,19 @@ class Test(unittest.TestCase):
                     self.assertEqual(c_out.value, a < 0)
 
 
+    def test_DecimalAdder(self):
+        for a in xrange(0, 10000, 907):
+            d_a = Vector(dd for d in reversed("%04u" % a) for dd in Vector(int(d), 4))
+            for b in xrange(0, 10000, 359):
+                d_b = Vector(dd for d in reversed("%04u" % b) for dd in Vector(int(d), 4))
+                for c in xrange(2):
+                    sls, c_out = DecimalAdder(d_a, d_b, Signal(c))
+                    d_sum = sls + [c_out]
+                    sum = int(
+                        ''.join(reversed([str(signalsToInt(d_sum[i:i + 4], False)) for i in xrange(0, len(d_sum), 4)])))
+                    self.assertEqual(sum, a + b + c, "%i != %i (%i + %i + %i)" % (sum, a + b + c, a, b, c))
+
+
     def test_arith(self):
         self.assertEquals(int(-TestVector(10)), -10)
         self.assertEquals(int(TestVector(10) + TestVector(-24)), 10 + -24)
@@ -167,14 +181,14 @@ class Test(unittest.TestCase):
             self.assertEqual(signalsToInt(Vector(d), False), 2 ** i)
 
 
-    def _test_Memory(self):
-        a = TestVector(0, 8)
+    def test_Memory(self):
+        a = TestVector(0, 9)
         d = TestVector(0, 16)
         mem_wr = TestSignal(0)
         q = Memory(a, d, mem_wr)
         print calcAreaDelay(a)
         print calcAreaDelay(d)
-        print calcAreaDelay(mem_wr[:])
+        print calcAreaDelay(mem_wr)
         for i in xrange(2 ** 8):
             d[:] = i
             a[:] = i
@@ -231,8 +245,9 @@ class Test(unittest.TestCase):
         dst_wr = TestSignal()
         bw = TestVector(0, 1)
         pc_incr = TestSignal()
-        src_out, dst_out, regs = MSP430.RegisterFile(pc_incr, src_reg, dst_reg, src_incr, dst_in, sr_in, dst_wr, bw,
-                                                     clk, reset)
+        src_out, dst_out, regs, src_incr_val = MSP430.RegisterFile(pc_incr, src_reg, dst_reg, src_incr, dst_in, sr_in,
+                                                                   dst_wr, bw,
+                                                                   clk, reset)
 
         dst_wr.set(True)
         for r in xrange(16):
@@ -410,11 +425,13 @@ class Test(unittest.TestCase):
             fn(R(5), B)
         debuglines = CPU(code_sequence.code, clk)
         for a, fl, flb in test_seq:
+            carry = (int(debuglines['regs'][2]) >> MSP430.FLAGS_SR_BITS['c']) % 2
             clk.cycle(3)
-            self.assertEquals(debuglines['regs'][4], Vector(op(a), 16),
+            res = op(a, carry, 16)
+            self.assertEquals(debuglines['regs'][4], Vector(res, 16),
                               'Result wrong while testing %s %i: is %s, should be %s' % (instr, a,
                                                                                          int(debuglines['regs'][4]),
-                                                                                         op(a)))
+                                                                                         res))
             self.assertEquals(debuglines['regs'][2], Vector(sum(2 ** MSP430.FLAGS_SR_BITS[f] for f in fl), 16),
                               'Flags wrong while testing %s %i: is %s, should be %s' % (instr, a,
                                                                                         int(debuglines['regs'][2]),
@@ -422,11 +439,13 @@ class Test(unittest.TestCase):
                                                                                             MSP430.FLAGS_SR_BITS[f]
                                                                                             for f in fl)))
         for a, fl, flb in test_seq:
+            carry = (int(debuglines['regs'][2]) >> MSP430.FLAGS_SR_BITS['c']) % 2
             clk.cycle(3)
-            self.assertEquals(Vector(debuglines['regs'][5][:8]), Vector(op(a), 8),
+            res = op(a, carry, 8)
+            self.assertEquals(Vector(debuglines['regs'][5][:8]), Vector(res, 8),
                               'Result wrong while testing (byte) %s %i: is %s, should be %s' % (instr,
                                                                                                 a, int(
-                                  Vector(debuglines['regs'][5][:8])), op(a)))
+                                  Vector(debuglines['regs'][5][:8])), res))
             self.assertEquals(debuglines['regs'][2], Vector(sum(2 ** MSP430.FLAGS_SR_BITS[f] for f in flb), 16),
                               'Flags wrong while testing (byte) %s %i: is %s, should be %s' % (instr,
                                                                                                a, int(
@@ -435,12 +454,12 @@ class Test(unittest.TestCase):
     def test_RRA(self):
         test_seq = [(1, 'zc', 'zc'), (7, 'c', 'c'), (-2, 'n', 'n'), (1 + 4 + 16 + 64, 'c', 'c'),
                     (2 ** 15 - 1, 'c', 'cn')]
-        self.one_arg_alu('RRA', lambda a: a >> 1, test_seq)
+        self.one_arg_alu('RRA', lambda a, c, l: a >> 1, test_seq)
 
     def test_RRC(self):
-        test_seq = [(1, 'zc', 'zc'), (7, 'c', 'c'), (-2, 'n', 'n'), (1 + 4 + 16 + 64, 'c', 'c'),
-                    (2 ** 15 - 1, 'c', 'cn')]
-        self.one_arg_alu('RRC', lambda a: a >> 1, test_seq)
+        test_seq = [(1, 'zc', 'zc'), (6, 'vn', 'vn'), (5, 'c', 'c'), (1 + 2 + 16 + 64, 'vnc', 'vnc'),
+                    (2 ** 15 - 1, 'vnc', 'nc'), (116, 'vn', 'vn'), (0, 'z', 'z')]
+        self.one_arg_alu('RRC', lambda a, c, l: (a >> 1) | c << (l - 1), test_seq)
 
     def test_OneArgInstr(self):
         clk = TestSignal()
@@ -450,37 +469,26 @@ class Test(unittest.TestCase):
         s2, d2 = code_sequence.MOV(+N(s1), R(4))
         s3, d3 = code_sequence.RRA(+N(s1))
         s4, d4 = code_sequence.MOV(+N(s1), R(5))
+        s5, d5 = code_sequence.MOV(N(s1), R(6))
+        s6, d6 = code_sequence.RRA(~R(6))
+        s7, d7 = code_sequence.MOV(+N(s1), R(6))
+        s8, d8 = code_sequence.MOV(R(6), R(7))
+        s9, d9 = code_sequence.RRA(R(7))
 
         debuglines = CPU(code_sequence.code, clk)
         clk.cycle(d1)
         clk.cycle(d2)
         clk.cycle(d3)
         clk.cycle(d4)
+        clk.cycle(d5)
+        clk.cycle(d6)
+        clk.cycle(d7, debuglines)
+        clk.cycle(d8, debuglines)
+        clk.cycle(d9, debuglines)
         self.assertEquals(debuglines['regs'][4], Vector(v / 2, 16))
         self.assertEquals(debuglines['regs'][5], Vector(v / 4, 16))
-
-    @unittest.skip("debugging")
-    def test_MSP430(self):
-        clk = TestSignal()
-        code_sequence = CodeSequence()
-        code_sequence.MOV(N(10), R(4))
-        code_sequence.SUB(N(3), R(4))
-        code_sequence.MOV(N(7), R(5))
-        code_sequence.BIS(N(132), R(5))
-
-        debuglines = CPU(code_sequence.code, clk)
-
-        for _ in xrange(10):
-            print '-' * 30
-            for k in sorted(debuglines.keys()):
-                print k, ':', debuglines[k]
-            clk.set()
-            clk.reset()
-        self.fail('Debug')
-
-    def test_add(self):
-        r, c = KoggeStoneAdder(Vector(1, 4), Vector(2, 4), Signal(1))
-        print Vector(r)
+        self.assertEquals(debuglines['regs'][6], Vector(v / 8, 16))
+        self.assertEquals(debuglines['regs'][7], Vector(v / 16, 16))
 
 
 if __name__ == "__main__":
