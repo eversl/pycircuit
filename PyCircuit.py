@@ -375,20 +375,31 @@ class Nor(CircuitOper):
         return not (a | b)
 
 
-def Enum(*args):
-    if len(args) == 1:
-        try:
-            kv = [(k, v) for v, k in args[0].iteritems()]
-        except:
+class Enum(object):
+    def __init__(self, *args):
+        if len(args) == 1:
+            try:
+                kv = [(k, v) for v, k in args[0].iteritems()]
+            except:
+                kv = list(enumerate(args))
+        else:
             kv = list(enumerate(args))
-    else:
-        kv = list(enumerate(args))
-    bits = 0
-    maxarg = max(k for k, _ in kv)
-    while maxarg >= (1 << bits):
-        bits += 1
-    state = {k: Vector(v, bits) for v, k in kv}
-    return {k: EnumVector(state, state[k]) for k in state}
+        bits = 0
+        maxarg = max(k for k, _ in kv)
+        while maxarg >= (1 << bits):
+            bits += 1
+
+        self._dict = {k: EnumVector(self, v, bits) for v, k in kv}
+
+    def __getitem__(self, item):
+        return self._dict[item]
+
+    def __getattr__(self, item):
+        return self[item]
+
+    def __iter__(self):
+        return self._dict.__iter__()
+
 
 
 def getDefault(val1, *vals):
@@ -430,6 +441,10 @@ def Case(state, cases, default=None):
             for kk in k:
                 cases[kk] = v
             del cases[k]
+    if isinstance(state, Vector) and state.enum:
+        for k in cases:
+            if k.enum != state.enum:
+                raise ValueError("%s and %s are not of same enum type")
     zip_all(state, *cases.keys())
     length = len(state)
     if default is None:
@@ -438,6 +453,18 @@ def Case(state, cases, default=None):
         getDefault(default, *cases.values())
     alts = [cases.get(Vector(i, length), default) for i in xrange(2 ** length)]
     return Multiplexer(state, alts)
+
+
+def TrueInCase(state, cases):
+    if isinstance(cases, Vector):
+        cases = [cases]
+    new_cases = {}
+    for k in cases:
+        try:
+            new_cases[k] = cases[k]
+        except TypeError as e:
+            new_cases[k] = Signal(True)
+    return Case(state, new_cases, default=Signal())
 
 
 def HalfAdder(a, b):

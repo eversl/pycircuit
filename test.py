@@ -297,9 +297,9 @@ class Test(unittest.TestCase):
 
     def test_CPU_init(self):
         clk = TestSignal()
-        code_sequence = CodeSequence()
+        cs = CodeSequence()
 
-        debuglines = CPU(code_sequence.code, clk)
+        debuglines = CPU(cs.code, clk)
 
         for reg in debuglines['regs']:
             print reg
@@ -307,16 +307,16 @@ class Test(unittest.TestCase):
 
     def test_MOV(self):
         clk = TestSignal()
-        code_sequence = CodeSequence()
-        s1, d1 = code_sequence.MOV(N(2 ** 10), R(4))
-        s2, d2 = code_sequence.MOV(N(2 ** 10 + 2 ** 6), R(4), B)
-        s3, d3 = code_sequence.MOV(R(4), R(5))
-        s4, d4 = code_sequence.MOV(N(2 ** 8), +N(2 ** 16 - 4))
-        s5, d5 = code_sequence.MOV(+N(2 ** 16 - 4), +N(2 ** 16 - 6))
-        s6, d6 = code_sequence.MOV(+N(2 ** 16 - 4), R(6))
-        s7, d7 = code_sequence.MOV(+N(2 ** 16 - 6), R(7))
+        cs = CodeSequence()
+        s1, d1 = cs.MOV(N(2 ** 10), R(4))
+        s2, d2 = cs.MOV(N(2 ** 10 + 2 ** 6), R(4), B)
+        s3, d3 = cs.MOV(R(4), R(5))
+        s4, d4 = cs.MOV(N(2 ** 8), +N(2 ** 16 - 4))
+        s5, d5 = cs.MOV(+N(2 ** 16 - 4), +N(2 ** 16 - 6))
+        s6, d6 = cs.MOV(+N(2 ** 16 - 4), R(6))
+        s7, d7 = cs.MOV(+N(2 ** 16 - 6), R(7))
 
-        debuglines = CPU(code_sequence.code, clk)
+        debuglines = CPU(cs.code, clk)
 
         CPU_state = {k: debuglines[k] for k in ['state', 'instr']}
         clk.cycle(d1, CPU_state)  # MOV(N(2**10), R(4))
@@ -334,16 +334,16 @@ class Test(unittest.TestCase):
 
     def two_arg_alu(self, instr, op, test_seq):
         clk = TestSignal()
-        code_sequence = CodeSequence()
+        cs = CodeSequence()
         for a, b, fl, flb in test_seq:
-            code_sequence.MOV(N(a), R(4))
-            fn = getattr(code_sequence, instr)
+            cs.MOV(N(a), R(4))
+            fn = getattr(cs, instr)
             fn(N(b), R(4))
         for a, b, fl, flb in test_seq:
-            code_sequence.MOV(N(a), R(5), B)
-            fn = getattr(code_sequence, instr)
+            cs.MOV(N(a), R(5), B)
+            fn = getattr(cs, instr)
             fn(N(b), R(5), B)
-        debuglines = CPU(code_sequence.code, clk)
+        debuglines = CPU(cs.code, clk)
         for a, b, fl, flb in test_seq:
             clk.cycle(4)
             self.assertEquals(debuglines['regs'][4], Vector(op(a, b), 16),
@@ -414,16 +414,16 @@ class Test(unittest.TestCase):
 
     def one_arg_alu(self, instr, op, test_seq):
         clk = TestSignal()
-        code_sequence = CodeSequence()
+        cs = CodeSequence()
         for a, fl, flb in test_seq:
-            code_sequence.MOV(N(a), R(4))
-            fn = getattr(code_sequence, instr)
+            cs.MOV(N(a), R(4))
+            fn = getattr(cs, instr)
             fn(R(4))
         for a, fl, flb in test_seq:
-            code_sequence.MOV(N(a), R(5), B)
-            fn = getattr(code_sequence, instr)
+            cs.MOV(N(a), R(5), B)
+            fn = getattr(cs, instr)
             fn(R(5), B)
-        debuglines = CPU(code_sequence.code, clk)
+        debuglines = CPU(cs.code, clk)
         for a, fl, flb in test_seq:
             carry = (int(debuglines['regs'][2]) >> MSP430.FLAGS_SR_BITS['c']) % 2
             clk.cycle(3)
@@ -463,19 +463,19 @@ class Test(unittest.TestCase):
 
     def test_OneArgInstr(self):
         clk = TestSignal()
-        code_sequence = CodeSequence()
+        cs = CodeSequence()
         v = -32768
-        s1, d1 = code_sequence.RRA(N(v))
-        s2, d2 = code_sequence.MOV(+N(s1), R(4))
-        s3, d3 = code_sequence.RRA(+N(s1))
-        s4, d4 = code_sequence.MOV(+N(s1), R(5))
-        s5, d5 = code_sequence.MOV(N(s1), R(6))
-        s6, d6 = code_sequence.RRA(~R(6))
-        s7, d7 = code_sequence.MOV(+N(s1), R(6))
-        s8, d8 = code_sequence.MOV(R(6), R(7))
-        s9, d9 = code_sequence.RRA(R(7))
+        s1, d1 = cs.RRA(N(v))
+        s2, d2 = cs.MOV(+N(s1), R(4))
+        s3, d3 = cs.RRA(+N(s1))
+        s4, d4 = cs.MOV(+N(s1), R(5))
+        s5, d5 = cs.MOV(N(s1), R(6))
+        s6, d6 = cs.RRA(~R(6))
+        s7, d7 = cs.MOV(+N(s1), R(6))
+        s8, d8 = cs.MOV(R(6), R(7))
+        s9, d9 = cs.RRA(R(7))
 
-        debuglines = CPU(code_sequence.code, clk)
+        debuglines = CPU(cs.code, clk)
         clk.cycle(d1)
         clk.cycle(d2)
         clk.cycle(d3)
@@ -489,6 +489,78 @@ class Test(unittest.TestCase):
         self.assertEquals(debuglines['regs'][5], Vector(v / 4, 16))
         self.assertEquals(debuglines['regs'][6], Vector(v / 8, 16))
         self.assertEquals(debuglines['regs'][7], Vector(v / 16, 16))
+
+    def test_PUSH(self):
+        clk = TestSignal()
+        cs = CodeSequence()
+        s0, d0 = cs.MOV(N(0xFFFF), R(1))
+        s1, d1 = cs.PUSH(R(1))
+        s2, d2 = cs.MOV(~R(1), R(4))
+        s3, d3 = cs.PUSH(N(255))
+        s4, d4 = cs.MOV(~R(1), R(4))
+        s5, d5 = cs.PUSH(~R(0))
+        s6, d6 = cs.MOV(~R(1), R(4))
+
+        debuglines = CPU(cs.code, clk)
+        clk.cycle(d0)
+        self.assertEquals(debuglines['regs'][1], Vector(-2, 16))
+        clk.cycle(d1)
+        self.assertEquals(debuglines['regs'][1], Vector(-4, 16))
+        clk.cycle(d2)
+        self.assertEquals(debuglines['regs'][4], Vector(-2, 16))
+        clk.cycle(d3)
+        self.assertEquals(debuglines['regs'][1], Vector(-6, 16))
+        clk.cycle(d4)
+        self.assertEquals(debuglines['regs'][4], Vector(255, 16))
+        clk.cycle(d5)
+        clk.cycle(d6)
+        self.assertEquals(debuglines['regs'][4], Vector(16676, 16))
+
+
+    def test_BRANCH(self):
+        clk = TestSignal()
+        cs = CodeSequence()
+        s0, d0 = cs.MOV(N(0xFFFF), R(10))
+        s1, d1 = cs.BRANCH(R(4))
+
+        debuglines = CPU(cs.code, clk)
+        for _ in range(2):
+            clk.cycle(d0)
+            clk.cycle(d1)
+            self.assertEquals(debuglines['regs'][0], Vector(0, 16))
+
+
+    def test_JMP(self):
+        clk = TestSignal()
+        cs = CodeSequence()
+        l1 = cs.label()
+        s0, d0 = cs.MOV(N(0xFFFF), R(10))
+        s1, d1 = cs.JMP(l1)
+
+        debuglines = CPU(cs.code, clk)
+        for _ in range(2):
+            clk.cycle(d0)
+            clk.cycle(d1)
+            self.assertEquals(debuglines['regs'][0], Vector(0, 16))
+
+
+    def test_CALL(self):
+        clk = TestSignal()
+        cs = CodeSequence()
+        s0, d0 = cs.MOV(N(0xFFFF), R(1))
+        s1, d1 = cs.MOV(~R(1), R(4))
+        s2, d2 = cs.CALL(N(s0 * 2))
+
+        debuglines = CPU(cs.code, clk)
+        clk.cycle(d0)
+        self.assertEquals(debuglines['regs'][1], Vector(-2, 16))
+        clk.cycle(d1)
+        self.assertEquals(debuglines['regs'][4], Vector(0, 16))
+        clk.cycle(d2)
+        self.assertEquals(debuglines['regs'][0], Vector(s0 * 2, 16))
+        self.assertEquals(debuglines['regs'][1], Vector(-4, 16))
+        clk.cycle(d1)
+        self.assertEquals(debuglines['regs'][4], Vector((s0 + s1 + s2) * 2, 16))
 
 
 if __name__ == "__main__":
