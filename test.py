@@ -240,12 +240,14 @@ class Test(unittest.TestCase):
         src_reg = TestVector(0, 4)
         dst_reg = TestVector(0, 4)
         src_incr = TestSignal()
+        src_mode = TestVector(0, 2)
         dst_in = TestVector(0, 16)
         sr_in = TestVector(0, 16)
         dst_wr = TestSignal()
         bw = TestVector(0, 1)
         pc_incr = TestSignal()
-        src_out, dst_out, regs, src_incr_val = MSP430.RegisterFile(pc_incr, src_reg, dst_reg, src_incr, dst_in, sr_in,
+        src_out, dst_out, regs, src_incr_val = MSP430.RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode,
+                                                                   dst_in, sr_in,
                                                                    dst_wr, bw,
                                                                    clk, reset)
 
@@ -335,17 +337,21 @@ class Test(unittest.TestCase):
     def two_arg_alu(self, instr, op, test_seq):
         clk = TestSignal()
         cs = CodeSequence()
+        cycles = []
         for a, b, fl, flb in test_seq:
-            cs.MOV(N(a), R(4))
+            s0, d0 = cs.MOV(N(a), R(4))
             fn = getattr(cs, instr)
-            fn(N(b), R(4))
+            s1, d1 = fn(N(b), R(4))
+            cycles.append(d0 + d1)
         for a, b, fl, flb in test_seq:
-            cs.MOV(N(a), R(5), B)
+            s0, d0 = cs.MOV(N(a), R(5), B)
             fn = getattr(cs, instr)
-            fn(N(b), R(5), B)
+            s1, d1 = fn(N(b), R(5), B)
+            cycles.append(d0 + d1)
         debuglines = CPU(cs.code, clk)
         for a, b, fl, flb in test_seq:
-            clk.cycle(4)
+            clk.cycle(cycles.pop(0))
+            self.assertEquals(debuglines['state'], MSP430.STATES['FETCH'])
             self.assertEquals(debuglines['regs'][4], Vector(op(a, b), 16),
                               'Result wrong while testing %s %i %i: is %s, should be %s' % (instr,
                                                                                             a, b,
@@ -359,7 +365,8 @@ class Test(unittest.TestCase):
                                                                                                MSP430.FLAGS_SR_BITS[f]
                                                                                                for f in fl)))
         for a, b, fl, flb in test_seq:
-            clk.cycle(4)
+            clk.cycle(cycles.pop(0))
+            self.assertEquals(debuglines['state'], MSP430.STATES['FETCH'])
             self.assertEquals(Vector(debuglines['regs'][5][:8]), Vector(op(a, b), 8),
                               'Result wrong while testing (byte) %s %i %i: is %s, should be %s' % (instr,
                                                                                                    a, b, int(
@@ -415,18 +422,22 @@ class Test(unittest.TestCase):
     def one_arg_alu(self, instr, op, test_seq):
         clk = TestSignal()
         cs = CodeSequence()
+        cycles = []
         for a, fl, flb in test_seq:
-            cs.MOV(N(a), R(4))
+            s0, d0 = cs.MOV(N(a), R(4))
             fn = getattr(cs, instr)
-            fn(R(4))
+            s1, d1 = fn(R(4))
+            cycles.append(d0 + d1)
         for a, fl, flb in test_seq:
-            cs.MOV(N(a), R(5), B)
+            s0, d0 = cs.MOV(N(a), R(5), B)
             fn = getattr(cs, instr)
-            fn(R(5), B)
+            s1, d1 = fn(R(5), B)
+            cycles.append(d0 + d1)
         debuglines = CPU(cs.code, clk)
         for a, fl, flb in test_seq:
             carry = (int(debuglines['regs'][2]) >> MSP430.FLAGS_SR_BITS['c']) % 2
-            clk.cycle(3)
+            clk.cycle(cycles.pop(0))
+            self.assertEquals(debuglines['state'], MSP430.STATES['FETCH'])
             res = op(a, carry, 16)
             self.assertEquals(debuglines['regs'][4], Vector(res, 16),
                               'Result wrong while testing %s %i: is %s, should be %s' % (instr, a,
@@ -440,7 +451,8 @@ class Test(unittest.TestCase):
                                                                                             for f in fl)))
         for a, fl, flb in test_seq:
             carry = (int(debuglines['regs'][2]) >> MSP430.FLAGS_SR_BITS['c']) % 2
-            clk.cycle(3)
+            clk.cycle(cycles.pop(0))
+            self.assertEquals(debuglines['state'], MSP430.STATES['FETCH'])
             res = op(a, carry, 8)
             self.assertEquals(Vector(debuglines['regs'][5][:8]), Vector(res, 8),
                               'Result wrong while testing (byte) %s %i: is %s, should be %s' % (instr,
@@ -529,7 +541,6 @@ class Test(unittest.TestCase):
             clk.cycle(d1)
             self.assertEquals(debuglines['regs'][0], Vector(0, 16))
 
-
     def test_JMP(self):
         clk = TestSignal()
         cs = CodeSequence()
@@ -541,6 +552,57 @@ class Test(unittest.TestCase):
         for _ in range(2):
             clk.cycle(d0)
             clk.cycle(d1)
+            self.assertEquals(debuglines['regs'][0], Vector(0, 16))
+
+    def test_JZ(self):
+        clk = TestSignal()
+        cs = CodeSequence()
+        l1 = cs.label()
+        s0, d0 = cs.CLRZ()
+        s1, d1 = cs.JZ(l1)
+        s2, d2 = cs.SETZ()
+        s3, d3 = cs.JZ(l1)
+
+        debuglines = CPU(cs.code, clk)
+        for _ in range(2):
+            clk.cycle(d0)
+            clk.cycle(d1)
+            clk.cycle(d2)
+            clk.cycle(d3)
+            self.assertEquals(debuglines['regs'][0], Vector(0, 16))
+
+    def test_JN(self):
+        clk = TestSignal()
+        cs = CodeSequence()
+        l1 = cs.label()
+        s0, d0 = cs.CLRN()
+        s1, d1 = cs.JN(l1)
+        s2, d2 = cs.SETN()
+        s3, d3 = cs.JN(l1)
+
+        debuglines = CPU(cs.code, clk)
+        for _ in range(2):
+            clk.cycle(d0)
+            clk.cycle(d1)
+            clk.cycle(d2)
+            clk.cycle(d3)
+            self.assertEquals(debuglines['regs'][0], Vector(0, 16))
+
+    def test_JC(self):
+        clk = TestSignal()
+        cs = CodeSequence()
+        l1 = cs.label()
+        s0, d0 = cs.CLRC()
+        s1, d1 = cs.JC(l1)
+        s2, d2 = cs.SETC()
+        s3, d3 = cs.JC(l1)
+
+        debuglines = CPU(cs.code, clk)
+        for _ in range(2):
+            clk.cycle(d0)
+            clk.cycle(d1)
+            clk.cycle(d2)
+            clk.cycle(d3)
             self.assertEquals(debuglines['regs'][0], Vector(0, 16))
 
 

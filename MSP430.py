@@ -8,7 +8,7 @@ from PyCircuit import Vector, Signal, Memory, Decoder, FlipFlops, FeedbackVector
     Enum, Case, EnumVector, KoggeStoneAdder, Negate, And, signalsToInt, DecimalAdder, TrueInCase
 
 
-def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, dst_in, sr_in, dst_wr, bw, clk, reset):
+def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, dst_wr, bw, clk, reset):
     dst_lines = Decoder(dst_reg)
     src_lines = Decoder(src_reg)
 
@@ -26,7 +26,15 @@ def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, dst_in, sr_in, dst_wr, bw,
     q_outs[0] = Vector([Signal(0)] + q_outs[0][1:])
     q_outs[1] = Vector([Signal(0)] + q_outs[1][1:])
 
-    src_out = Vector([Or(*l) for l in zip(*(src_line & q_out for src_line, q_out in zip_all(src_lines, q_outs)))])
+    src_out = Vector([Or(*l) for l in zip(*(src_line & (Case(src_mode, {SRC_M['M_INDEX']: Vector(0, 16),
+                                                                        SRC_M['M_INDIRECT']: Vector(4, 16),
+                                                                        SRC_M['M_INCR']: Vector(8, 16)},
+                                                             q_out) if q_out is q_outs[2]
+                                                        else Case(src_mode, {SRC_M['M_INDEX']: Vector(1, 16),
+                                                                             SRC_M['M_INDIRECT']: Vector(2, 16),
+                                                                             SRC_M['M_INCR']: Vector(-1, 16)},
+                                                                  q_out) if q_out is q_outs[3]
+    else q_out) for src_line, q_out in zip_all(src_lines, q_outs)))])
     dst_out = Vector([Or(*l) for l in zip(*(dst_line & q_out for dst_line, q_out in zip_all(dst_lines, q_outs)))])
 
     for out, old_out in zip_all(q_outs, old_outs):
@@ -34,7 +42,8 @@ def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, dst_in, sr_in, dst_wr, bw,
             If(pc_incr, out + Vector(2, 16), out) if out is q_outs[0] else
             If(dst_wr & ~dst_lines[2], sr_in, out) if out is q_outs[2] else out, clk)
 
-        old_out.connect(Vector([Signal(0)] + flip_flops[1:]) if out is q_outs[0] or out is q_outs[1] else flip_flops)
+        old_out.connect(Vector([Signal(0)] + flip_flops[1:]) if out is q_outs[0] or out is q_outs[1] else
+                        Vector(0, 16) if out is q_outs[3] else flip_flops)
 
     incr_op = If(~ bw[0] | src_lines[0] | src_lines[1], Vector(2, 16), Vector(1, 16))
 
@@ -322,15 +331,28 @@ class CodeSequence(object):
 
     def two_operand_instr(self, instr, src, dst, b=False):
         old_len = len(self.code)
-        self.code.append(instr << 12 | src.reg << 8 | dst.mode << 7 | b << 6 | src.mode << 4 | dst.reg)
         assert src.mode in [M_DIRECT, M_INDEX, M_INDIRECT, M_INCR]
         assert dst.mode in [M_DIRECT, M_INDEX]
-        if src.mode == M_INDEX or (src.mode == M_INCR and src.reg == R_PC):
+
+        special_constant = False
+        if src.mode == M_INCR and src.reg == R_PC and src.index in [-1, 0, 1, 2, 4, 8]:
+            special_constant = True
+            src.reg, src.mode = {-1: (3, 0b11),
+                                 0: (3, 0b00),
+                                 1: (3, 0b01),
+                                 2: (3, 0b10),
+                                 4: (2, 0b10),
+                                 8: (2, 0b11)}[src.index]
+        self.code.append(instr << 12 | src.reg << 8 | dst.mode << 7 | b << 6 | src.mode << 4 | dst.reg)
+
+        if not special_constant and (src.mode == M_INDEX or (src.mode == M_INCR and src.reg == R_PC)):
             self.code.append(src.index)
         if dst.mode == M_INDEX:
             self.code.append(dst.index)
         new_len = len(self.code)
         duration = {M_DIRECT: 1, M_INDEX: 3, M_INDIRECT: 2, M_INCR: 2}[src.mode] + (3 if dst.mode == M_INDEX else 0)
+        if special_constant:
+            duration = 4 if dst.mode == M_INDEX else 1
         return new_len - old_len, duration
 
     def one_operand_instr(self, instr, dst, b=False):
@@ -513,9 +535,13 @@ def CPU(mem_init, clk):
     flags_in = {v: sr_reg[FLAGS_SR_BITS[v]] for v in FLAGS_SR_BITS}
 
     dst_wr = (TrueInCase(state, {STATES['FETCH']:
-                                     Case(inst_type, {I_TYPES['IT_TWO']: TrueInCase(a_s, {SRC_M['M_DIRECT']:
-                                                                                              TrueInCase(a_d, DST_M[
-                                                                                                  'M_DIRECT'])}),
+                                     Case(inst_type, {I_TYPES['IT_TWO']:
+                                                          TrueInCase(a_s, {
+                                                          SRC_M['M_DIRECT']: TrueInCase(a_d, DST_M['M_DIRECT']),
+                                                          (SRC_M['M_INDEX'], SRC_M['M_INDIRECT'], SRC_M['M_INCR']):
+                                                              TrueInCase(src_reg, {(Vector(2, 4), Vector(3, 4)):
+                                                                                       TrueInCase(a_d, DST_M[
+                                                                                           'M_DIRECT'])})}),
                                                       I_TYPES['IT_ONE']: TrueInCase(a_s, SRC_M['M_DIRECT'])}),
                                  (STATES['SRC_INDIRECT'], STATES['SRC_INCR'], STATES['SRC_GET']):
                                      TrueInCase(inst_type, {I_TYPES['IT_TWO']: TrueInCase(a_d, DST_M['M_DIRECT'])}),
@@ -543,6 +569,7 @@ def CPU(mem_init, clk):
                      dst_reg=Case(state, {(STATES['PUSH'], STATES['CALL1']): Vector(1, 4),
                                           STATES['CALL2']: Vector(0, 4)}, dst_reg),
                      src_incr=Case(state, {STATES['SRC_INCR']: Signal(True)}),
+                     src_mode=a_s,
                      dst_in=Case(inst_bw,
                                  {BYTE_WORD['BYTE']: Vector(dst_in[:8] + [Signal()] * 8),
                                   BYTE_WORD['WORD']: dst_in}),
@@ -603,10 +630,18 @@ def CPU(mem_init, clk):
                             Case(state, {STATES['FETCH']:
                                              Case(inst_type, {I_TYPES['IT_TWO']:
                                                                   Case(a_s, {SRC_M['M_DIRECT']: next_dst_state,
-                                                                             SRC_M['M_INCR']: STATES['SRC_INCR'],
-                                                                             SRC_M['M_INDIRECT']: STATES[
-                                                                                 'SRC_INDIRECT'],
-                                                                             SRC_M['M_INDEX']: STATES['SRC_IDX']}),
+                                                                             SRC_M['M_INCR']:
+                                                                                 Case(src_reg, {(Vector(2, 4), Vector(3,
+                                                                                                                      4)): next_dst_state},
+                                                                                      STATES['SRC_INCR']),
+                                                                             SRC_M['M_INDIRECT']:
+                                                                                 Case(src_reg, {(Vector(2, 4), Vector(3,
+                                                                                                                      4)): next_dst_state},
+                                                                                      STATES['SRC_INDIRECT']),
+                                                                             SRC_M['M_INDEX']:
+                                                                                 Case(src_reg,
+                                                                                      {Vector(3, 4): next_dst_state},
+                                                                                      STATES['SRC_IDX'])}),
                                                               I_TYPES['IT_ONE']:
                                                                   Case(a_s, {SRC_M['M_DIRECT']:
                                                                                  Case(instr,
