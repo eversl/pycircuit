@@ -8,7 +8,7 @@ from PyCircuit import Vector, Signal, Memory, Decoder, FlipFlops, FeedbackVector
     Enum, Case, EnumVector, KoggeStoneAdder, Negate, And, signalsToInt, DecimalAdder, TrueInCase
 
 
-def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, dst_wr, bw, clk, reset):
+def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, dst_wr, bw, clk):
     dst_lines = Decoder(dst_reg)
     src_lines = Decoder(src_reg)
 
@@ -18,10 +18,9 @@ def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, d
     src_incr_val = FeedbackVector(0, 16)
     old_outs = [FeedbackVector(0, 16) for _ in dst_lines]
 
-    q_outs = [Vector(If(reset, Vector(0, 16),
-                        If(src_incr_line, src_incr_val,
+    q_outs = [Vector(If(src_incr_line, src_incr_val,
                            If(dst_wr_line, dst_wr_val,
-                              old_out))))
+                              old_out)))
               for src_incr_line, dst_wr_line, old_out in zip_all(src_incr_lines, dst_wr_lines, old_outs)]
     q_outs[0] = Vector([Signal(0)] + q_outs[0][1:])
     q_outs[1] = Vector([Signal(0)] + q_outs[1][1:])
@@ -491,8 +490,6 @@ STATES = Enum('FETCH', 'SRC_INDIRECT', 'SRC_INCR', 'SRC_IDX', 'DST_IDX', 'DST_GE
 
 
 def CPU(mem_init, clk):
-    reset = FeedbackSignal()
-
     dst_in = FeedbackVector(0, 16)
     sr_in = FeedbackVector(0, 16)
 
@@ -576,8 +573,7 @@ def CPU(mem_init, clk):
                      sr_in=sr_in,
                      dst_wr=dst_wr,
                      bw=inst_bw,
-                     clk=clk,
-                     reset=reset)
+                     clk=clk)
     feedback_src_out.connect(src_out)
     pc_reg.connect(regs[0])
     sp_reg.connect(regs[1] + Vector(-2))
