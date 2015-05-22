@@ -3,54 +3,55 @@ Created on Mar 21, 2014
 
 @author: leonevers
 '''
-from PyCircuit import Vector, Signal, Memory, Decoder, FlipFlops, FeedbackVector, If, zip_all, FeedbackSignal, Or, \
+from PyCircuit import Vector, Signal, Memory, Decoder, FlipFlops, FeedbackVector, If, zip_all, Or, \
     calcAreaDelay, \
-    Enum, Case, EnumVector, KoggeStoneAdder, Negate, And, signalsToInt, DecimalAdder, TrueInCase
+    Enum, Case, EnumVector, KoggeStoneAdder, Negate, And, signalsToInt, DecimalAdder, TrueInCase, Register
 
 
 def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, dst_wr, bw, clk):
     dst_lines = Decoder(dst_reg)
     src_lines = Decoder(src_reg)
 
-    src_incr_lines = FeedbackVector(0, len(src_lines))
-    dst_wr_lines = FeedbackVector(0, len(dst_lines))
-    dst_wr_val = FeedbackVector(0, 16)
-    src_incr_val = FeedbackVector(0, 16)
-    old_outs = [FeedbackVector(0, 16) for _ in dst_lines]
+    prev_src_incr_lines = FeedbackVector(0, len(src_lines))
+    prev_dst_wr_lines = FeedbackVector(0, len(dst_lines))
+    prev_dst_in = FeedbackVector(0, 16)
+    prev_src_incr_val = FeedbackVector(0, 16)
+    reg_sizes = [15, 15, 16, 0] + [16] * 12
+    prev_reg_vals = [FeedbackVector(0, sz) for sz in reg_sizes]
 
-    q_outs = [Vector(If(src_incr_line, src_incr_val,
-                           If(dst_wr_line, dst_wr_val,
-                              old_out)))
-              for src_incr_line, dst_wr_line, old_out in zip_all(src_incr_lines, dst_wr_lines, old_outs)]
-    q_outs[0] = Vector([Signal(0)] + q_outs[0][1:])
-    q_outs[1] = Vector([Signal(0)] + q_outs[1][1:])
+    out_vals = [Vector([Signal(0)] * (16 - sz) + If(src_incr_line, prev_src_incr_val[16 - sz:],
+                                                    If(dst_wr_line, prev_dst_in[16 - sz:], prev_reg_val)))
+                for sz, src_incr_line, dst_wr_line, prev_reg_val in
+                zip_all(reg_sizes, prev_src_incr_lines, prev_dst_wr_lines, prev_reg_vals)]
 
-    src_out = Vector([Or(*l) for l in zip(*(src_line & (Case(src_mode, {SRC_M['M_INDEX']: Vector(0, 16),
-                                                                        SRC_M['M_INDIRECT']: Vector(4, 16),
-                                                                        SRC_M['M_INCR']: Vector(8, 16)},
-                                                             q_out) if q_out is q_outs[2]
-                                                        else Case(src_mode, {SRC_M['M_INDEX']: Vector(1, 16),
-                                                                             SRC_M['M_INDIRECT']: Vector(2, 16),
-                                                                             SRC_M['M_INCR']: Vector(-1, 16)},
-                                                                  q_out) if q_out is q_outs[3]
-    else q_out) for src_line, q_out in zip_all(src_lines, q_outs)))])
-    dst_out = Vector([Or(*l) for l in zip(*(dst_line & q_out for dst_line, q_out in zip_all(dst_lines, q_outs)))])
+    cg_out_vals = [Case(src_mode, {SRC_M['M_INDEX']: Vector(0, 16),
+                                   SRC_M['M_INDIRECT']: Vector(4, 16),
+                                   SRC_M['M_INCR']: Vector(8, 16)}, out) if out is out_vals[2]
+                   else Case(src_mode, {SRC_M['M_INDEX']: Vector(1, 16),
+                                        SRC_M['M_INDIRECT']: Vector(2, 16),
+                                        SRC_M['M_INCR']: Vector(-1, 16)}, Vector(0, 16)) if out is out_vals[3]
+    else out for out in out_vals]
 
-    for out, old_out in zip_all(q_outs, old_outs):
-        flip_flops = FlipFlops(
-            If(pc_incr, out + Vector(2, 16), out) if out is q_outs[0] else
-            If(dst_wr & ~dst_lines[2], sr_in, out) if out is q_outs[2] else out, clk)
+    src_out = Vector([Or(*l) for l in zip(*(src_line & q_out for src_line, q_out in zip_all(src_lines, cg_out_vals)))])
+    dst_out = Vector([Or(*l) for l in zip(*(dst_line & q_out for dst_line, q_out in zip_all(dst_lines, out_vals)))])
 
-        old_out.connect(Vector([Signal(0)] + flip_flops[1:]) if out is q_outs[0] or out is q_outs[1] else
-                        Vector(0, 16) if out is q_outs[3] else flip_flops)
+    reg_vals = [If(pc_incr, Vector(out[16 - sz:]) + Vector(1, 15), out[16 - sz:]) if out is out_vals[0] else
+                If(dst_wr & ~dst_lines[2], sr_in, out[16 - sz:]) if out is out_vals[2] else
+                out[16 - sz:] for sz, out in zip_all(reg_sizes, out_vals)]
 
-    incr_op = If(~ bw[0] | src_lines[0] | src_lines[1], Vector(2, 16), Vector(1, 16))
+    for prev_reg_val, reg_val in zip_all(prev_reg_vals, reg_vals):
+        prev_reg_val.connect(FlipFlops(reg_val, clk))
 
-    src_incr_val.connect(FlipFlops(src_out + incr_op, clk))
-    src_incr_lines.connect(FlipFlops((src_incr & src_line for src_line in src_lines), clk))
-    dst_wr_lines.connect(FlipFlops((dst_wr & dst_line for dst_line in dst_lines), clk))
-    dst_wr_val.connect(FlipFlops(dst_in, clk))
-    return src_out, dst_out, q_outs, src_incr_val
+    src_incr_val = src_out + If(~ bw[0] | src_lines[0] | src_lines[1], Vector(2, 16), Vector(1, 16))
+    src_incr_lines = (src_incr & src_line for src_line in src_lines)
+    dst_wr_lines = (dst_wr & dst_line for dst_line in dst_lines)
+
+    prev_src_incr_val.connect(FlipFlops(src_incr_val, clk))
+    prev_src_incr_lines.connect(FlipFlops(src_incr_lines, clk))
+    prev_dst_wr_lines.connect(FlipFlops(dst_wr_lines, clk))
+    prev_dst_in.connect(FlipFlops(dst_in, clk))
+
+    return src_out, dst_out, out_vals, prev_src_incr_val
 
 
 I_TYPES = Enum('IT_TWO', 'IT_NONE', 'IT_ONE', 'IT_JUMP')
@@ -211,7 +212,6 @@ class CodeSequence(object):
         else:
             raise AttributeError
 
-
     # =============  emulated instructions ===================
 
     # Add carry to destination
@@ -326,8 +326,6 @@ class CodeSequence(object):
     def TST(self, dst, b):
         return self.CMP(N(0), dst, b)
 
-
-
     def two_operand_instr(self, instr, src, dst, b=False):
         old_len = len(self.code)
         assert src.mode in [M_DIRECT, M_INDEX, M_INDIRECT, M_INCR]
@@ -368,7 +366,6 @@ class CodeSequence(object):
             duration = {M_DIRECT: 3, M_INDEX: 5, M_INDIRECT: 5, M_INCR: 4}[dst.mode]
         return new_len - old_len, duration
 
-
     def jmp_instr(self, instr, lbl):
         offset = lbl.pos - len(self.code)
         mask = (1 << 10) - 1
@@ -398,7 +395,6 @@ def alu(instr, src, dst_in, flags_in, bw):
         flags = {'c': c_out, 'n': n_out, 'z': z_out, 'v': v_out}
         flags.update(flags_upd)
         return out, flags
-
 
     def do_mov(src):
         return src, flags_in
@@ -497,57 +493,58 @@ def CPU(mem_init, clk):
     sp_reg = FeedbackVector(0, 16)
     sr_reg = FeedbackVector(0, 16)
 
-    isWrite = Signal()
+    src = Register(clk, bits=16)
+    dst = Register(clk, bits=16)
+    idx_addr = Register(clk, bits=16)
 
-    prev_src = FeedbackVector(0, 16)
-    prev_dst = FeedbackVector(0, 16)
-    prev_idx_addr = FeedbackVector(0, 16)
-
-    prev_instr_word = FeedbackVector(0, 16)
-    prev_mem_in = FeedbackVector(0, 16)
+    instr_word = Register(clk, bits=16)
+    prev_mem_in = Register(clk, bits=16)
     feedback_src_out = FeedbackVector(0, 16)
 
-    state = FeedbackVector(STATES['FETCH'])
+    state = Register(clk, STATES['FETCH'])
 
-    mem_addr = Case(state, {STATES['FETCH']: pc_reg,
-                            STATES['SRC_INDIRECT']: feedback_src_out,
-                            STATES['SRC_INCR']: feedback_src_out,
-                            STATES['SRC_IDX']: pc_reg,
-                            STATES['SRC_GET']: prev_idx_addr,
-                            STATES['DST_IDX']: pc_reg,
-                            STATES['DST_GET']: prev_idx_addr,
-                            STATES['DST_PUT']: prev_idx_addr,
-                            STATES['PUSH']: sp_reg,
-                            STATES['CALL1']: sp_reg,
-                            STATES['CALL2']: prev_idx_addr})
+    mem_addr = Case(state.prev, {STATES['FETCH']: pc_reg,
+                                 STATES['SRC_INDIRECT']: feedback_src_out,
+                                 STATES['SRC_INCR']: feedback_src_out,
+                                 STATES['SRC_IDX']: pc_reg,
+                                 STATES['SRC_GET']: idx_addr.prev,
+                                 STATES['DST_IDX']: pc_reg,
+                                 STATES['DST_GET']: idx_addr.prev,
+                                 STATES['DST_PUT']: idx_addr.prev,
+                                 STATES['PUSH']: sp_reg,
+                                 STATES['CALL1']: sp_reg,
+                                 STATES['CALL2']: idx_addr.prev})
 
-    mem_out = Memory(mem_addr[1:8], prev_mem_in,
-                     TrueInCase(state, (STATES['DST_PUT'], STATES['PUSH'], STATES['CALL1'])), mem_init)
+    mem_out = Memory(mem_addr[1:8], prev_mem_in.prev,
+                     TrueInCase(state.prev, (STATES['DST_PUT'], STATES['PUSH'], STATES['CALL1'])), mem_init)
 
-    instr_word = Case(state, {STATES['FETCH']: mem_out}, default=prev_instr_word)
-    prev_instr_word.connect(FlipFlops(instr_word, clk))
+    instr_word.ccase(state.prev, {STATES['FETCH']: mem_out})
 
-    instr, inst_type, src_reg, dst_reg, inst_bw, a_s, a_d, offset = decodeInstr(instr_word)
+    instr, inst_type, src_reg, dst_reg, inst_bw, a_s, a_d, offset = decodeInstr(instr_word.next)
 
     flags_in = {v: sr_reg[FLAGS_SR_BITS[v]] for v in FLAGS_SR_BITS}
 
-    dst_wr = (TrueInCase(state, {STATES['FETCH']:
-                                     Case(inst_type, {I_TYPES['IT_TWO']:
-                                                          TrueInCase(a_s, {
-                                                          SRC_M['M_DIRECT']: TrueInCase(a_d, DST_M['M_DIRECT']),
-                                                          (SRC_M['M_INDEX'], SRC_M['M_INDIRECT'], SRC_M['M_INCR']):
-                                                              TrueInCase(src_reg, {(Vector(2, 4), Vector(3, 4)):
+    dst_wr = (TrueInCase(state.prev, {STATES['FETCH']:
+                                          Case(inst_type, {I_TYPES['IT_TWO']:
+                                                               TrueInCase(a_s, {
+                                                                   SRC_M['M_DIRECT']: TrueInCase(a_d,
+                                                                                                 DST_M['M_DIRECT']),
+                                                                   (SRC_M['M_INDEX'], SRC_M['M_INDIRECT'],
+                                                                    SRC_M['M_INCR']):
+                                                                       TrueInCase(src_reg,
+                                                                                  {(Vector(2, 4), Vector(3, 4)):
                                                                                        TrueInCase(a_d, DST_M[
                                                                                            'M_DIRECT'])})}),
-                                                      I_TYPES['IT_ONE']: TrueInCase(a_s, SRC_M['M_DIRECT'])}),
-                                 (STATES['SRC_INDIRECT'], STATES['SRC_INCR'], STATES['SRC_GET']):
-                                     TrueInCase(inst_type, {I_TYPES['IT_TWO']: TrueInCase(a_d, DST_M['M_DIRECT'])}),
-                                 STATES["DST_GET"]: TrueInCase(inst_type, I_TYPES['IT_TWO'])}) & \
+                                                           I_TYPES['IT_ONE']: TrueInCase(a_s, SRC_M['M_DIRECT'])}),
+                                      (STATES['SRC_INDIRECT'], STATES['SRC_INCR'], STATES['SRC_GET']):
+                                          TrueInCase(inst_type,
+                                                     {I_TYPES['IT_TWO']: TrueInCase(a_d, DST_M['M_DIRECT'])}),
+                                      STATES["DST_GET"]: TrueInCase(inst_type, I_TYPES['IT_TWO'])}) & \
               TrueInCase(inst_type, {I_TYPES['IT_TWO']: TrueInCase(a_d, DST_M['M_DIRECT']),
                                      I_TYPES['IT_ONE']: TrueInCase(a_s, SRC_M['M_DIRECT'])}) & \
               ~TrueInCase(instr, INSTRS['PUSH'])) | \
-             TrueInCase(instr, {INSTRS['PUSH']: TrueInCase(state, STATES['PUSH']),
-                                INSTRS['CALL']: TrueInCase(state, (STATES['CALL1'], STATES['CALL2'])),
+             TrueInCase(instr, {INSTRS['PUSH']: TrueInCase(state.prev, STATES['PUSH']),
+                                INSTRS['CALL']: TrueInCase(state.prev, (STATES['CALL1'], STATES['CALL2'])),
                                 INSTRS['JMP']: Signal(True),
                                 INSTRS['JNZ']: ~flags_in['z'],
                                 INSTRS['JZ']: flags_in['z'],
@@ -559,13 +556,13 @@ def CPU(mem_init, clk):
                                 })
 
     src_out, dst_out, regs, src_incr = \
-        RegisterFile(pc_incr=Case(state, {STATES['FETCH']: Signal(True),
-                                          STATES['SRC_IDX']: Signal(True),
-                                          STATES['DST_IDX']: Signal(True)}),
+        RegisterFile(pc_incr=Case(state.prev, {STATES['FETCH']: Signal(True),
+                                               STATES['SRC_IDX']: Signal(True),
+                                               STATES['DST_IDX']: Signal(True)}),
                      src_reg=src_reg,
-                     dst_reg=Case(state, {(STATES['PUSH'], STATES['CALL1']): Vector(1, 4),
-                                          STATES['CALL2']: Vector(0, 4)}, dst_reg),
-                     src_incr=Case(state, {STATES['SRC_INCR']: Signal(True)}),
+                     dst_reg=Case(state.prev, {(STATES['PUSH'], STATES['CALL1']): Vector(1, 4),
+                                               STATES['CALL2']: Vector(0, 4)}, dst_reg),
+                     src_incr=Case(state.prev, {STATES['SRC_INCR']: Signal(True)}),
                      src_mode=a_s,
                      dst_in=Case(inst_bw,
                                  {BYTE_WORD['BYTE']: Vector(dst_in[:8] + [Signal()] * 8),
@@ -579,26 +576,24 @@ def CPU(mem_init, clk):
     sp_reg.connect(regs[1] + Vector(-2))
     sr_reg.connect(regs[2])
 
-    idx_addr = Case(state, {STATES['SRC_IDX']: src_out + mem_out,
-                            STATES['DST_IDX']: dst_out + mem_out,
-                            STATES['SRC_INCR']: src_incr,
-                            STATES['SRC_INDIRECT']: src_out}, default=prev_idx_addr)
-    prev_idx_addr.connect(FlipFlops(idx_addr, clk))
+    idx_addr.ccase(state.prev, {STATES['SRC_IDX']: src_out + mem_out,
+                                STATES['DST_IDX']: dst_out + mem_out,
+                                STATES['SRC_INCR']: src_incr,
+                                STATES['SRC_INDIRECT']: src_out})
 
-    src = Case(state, {STATES['FETCH']: Case(inst_type, {I_TYPES['IT_JUMP']:
-                                                             Vector([Signal()] + offset[:] + [offset[-1]] * 5)},
-                                             src_out),
-                       (STATES['SRC_INDIRECT'], STATES['SRC_INCR'], STATES['SRC_GET']): mem_out}, default=prev_src)
-    dst = Case(state, {STATES['FETCH']: dst_out,
-                       STATES['DST_GET']:
-                           Case(inst_bw,
-                                {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(mem_out[8:] + mem_out[:8]), mem_out),
-                                 BYTE_WORD['WORD']: mem_out})}, default=prev_dst)
+    src.ccase(state.prev, {STATES['FETCH']: Case(inst_type, {I_TYPES['IT_JUMP']:
+        Vector(
+            [Signal()] + offset[:] + [offset[-1]] * 5)},
+                                                 src_out),
+                           (STATES['SRC_INDIRECT'], STATES['SRC_INCR'], STATES['SRC_GET']): mem_out})
+    dst.ccase(state.prev, {STATES['FETCH']: dst_out,
+                           STATES['DST_GET']:
+                               Case(inst_bw,
+                                    {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(mem_out[8:] + mem_out[:8]),
+                                                           mem_out),
+                                     BYTE_WORD['WORD']: mem_out})})
 
-    prev_src.connect(FlipFlops(src, clk))
-    prev_dst.connect(FlipFlops(dst, clk))
-
-    alu_out, flags_out = alu(instr, src, dst, flags_in, inst_bw)
+    alu_out, flags_out = alu(instr, src.next, dst.next, flags_in, inst_bw)
 
     REV_FLAGS_SR_BITS = {FLAGS_SR_BITS[k]: k for k in FLAGS}
 
@@ -611,60 +606,60 @@ def CPU(mem_init, clk):
 
     status_reg_out = Vector(flag_for_bit(n, b) for n, b in enumerate(regs[2]))
 
-    mem_in = Case(instr, {INSTRS['CALL']: pc_reg},
-                  Case(inst_bw, {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(alu_out[8:] + alu_out[:8]), dst_in),
-                                 BYTE_WORD['WORD']: alu_out}))
+    prev_mem_in.ccase(instr, {INSTRS['CALL']: pc_reg},
+                      Case(inst_bw, {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(alu_out[8:] + alu_out[:8]), dst_in),
+                                     BYTE_WORD['WORD']: alu_out}))
 
-    prev_mem_in.connect(FlipFlops(mem_in, clk))
-
-    dst_in.connect(Case(state, {(STATES['PUSH'], STATES['CALL1']): sp_reg}, alu_out))
+    dst_in.connect(Case(state.prev, {(STATES['PUSH'], STATES['CALL1']): sp_reg}, alu_out))
     sr_in.connect(status_reg_out)
 
     next_dst_state = Case(a_d, {DST_M['M_DIRECT']: STATES['FETCH'],
                                 DST_M['M_INDEX']: STATES['DST_IDX']})
-    next_state = EnumVector(STATES,
-                            Case(state, {STATES['FETCH']:
-                                             Case(inst_type, {I_TYPES['IT_TWO']:
-                                                                  Case(a_s, {SRC_M['M_DIRECT']: next_dst_state,
-                                                                             SRC_M['M_INCR']:
-                                                                                 Case(src_reg, {(Vector(2, 4), Vector(3,
-                                                                                                                      4)): next_dst_state},
-                                                                                      STATES['SRC_INCR']),
-                                                                             SRC_M['M_INDIRECT']:
-                                                                                 Case(src_reg, {(Vector(2, 4), Vector(3,
-                                                                                                                      4)): next_dst_state},
-                                                                                      STATES['SRC_INDIRECT']),
-                                                                             SRC_M['M_INDEX']:
-                                                                                 Case(src_reg,
-                                                                                      {Vector(3, 4): next_dst_state},
-                                                                                      STATES['SRC_IDX'])}),
-                                                              I_TYPES['IT_ONE']:
-                                                                  Case(a_s, {SRC_M['M_DIRECT']:
-                                                                                 Case(instr,
-                                                                                      {INSTRS['PUSH']: STATES['PUSH'],
-                                                                                       INSTRS['CALL']: STATES['CALL1']},
-                                                                                      STATES['FETCH']),
-                                                                             SRC_M['M_INCR']: STATES['SRC_INCR'],
-                                                                             SRC_M['M_INDIRECT']: STATES[
-                                                                                 'SRC_INDIRECT'],
-                                                                             SRC_M['M_INDEX']: STATES['SRC_IDX']}),
-                                                              I_TYPES['IT_JUMP']: STATES['FETCH']}),
-                                         (STATES['SRC_INCR'], STATES['SRC_INDIRECT'], STATES['SRC_GET']):
-                                             Case(inst_type, {I_TYPES['IT_TWO']: next_dst_state,
-                                                              I_TYPES['IT_ONE']: Case(instr,
-                                                                                      {INSTRS['PUSH']: STATES['PUSH'],
-                                                                                       INSTRS['CALL']: STATES['CALL1']},
-                                                                                      STATES['DST_PUT'])}),
-                                         STATES['SRC_IDX']: STATES['SRC_GET'],
-                                         STATES['DST_IDX']: STATES['DST_GET'],
-                                         STATES['DST_GET']: STATES['DST_PUT'],
-                                         STATES['DST_PUT']: STATES['FETCH'],
-                                         STATES['CALL1']: STATES['CALL2'],
-                                         STATES['CALL2']: STATES['FETCH']}))
-    state.connect(FlipFlops(next_state, clk))
+    state.ccase(state.prev, {STATES['FETCH']: Case(inst_type, {I_TYPES['IT_TWO']:
+                                                                   Case(a_s, {SRC_M['M_DIRECT']: next_dst_state,
+                                                                              SRC_M['M_INCR']:
+                                                                                  Case(src_reg, {
+                                                                                      (Vector(2, 4),
+                                                                                       Vector(3, 4)): next_dst_state},
+                                                                                       STATES['SRC_INCR']),
+                                                                              SRC_M['M_INDIRECT']:
+                                                                                  Case(src_reg, {
+                                                                                      (Vector(2, 4),
+                                                                                       Vector(3, 4)): next_dst_state},
+                                                                                       STATES['SRC_INDIRECT']),
+                                                                              SRC_M['M_INDEX']:
+                                                                                  Case(src_reg,
+                                                                                       {Vector(3, 4): next_dst_state},
+                                                                                       STATES['SRC_IDX'])}),
+                                                               I_TYPES['IT_ONE']:
+                                                                   Case(a_s, {SRC_M['M_DIRECT']:
+                                                                                  Case(instr,
+                                                                                       {INSTRS['PUSH']: STATES['PUSH'],
+                                                                                        INSTRS['CALL']: STATES[
+                                                                                            'CALL1']},
+                                                                                       STATES['FETCH']),
+                                                                              SRC_M['M_INCR']: STATES['SRC_INCR'],
+                                                                              SRC_M['M_INDIRECT']: STATES[
+                                                                                  'SRC_INDIRECT'],
+                                                                              SRC_M['M_INDEX']: STATES['SRC_IDX']}),
+                                                               I_TYPES['IT_JUMP']: STATES['FETCH']}),
+                             (STATES['SRC_INCR'], STATES['SRC_INDIRECT'], STATES['SRC_GET']):
+                                 Case(inst_type, {I_TYPES['IT_TWO']: next_dst_state,
+                                                  I_TYPES['IT_ONE']: Case(instr,
+                                                                          {INSTRS['PUSH']: STATES['PUSH'],
+                                                                           INSTRS['CALL']: STATES['CALL1']},
+                                                                          STATES['DST_PUT'])}),
+                             STATES['SRC_IDX']: STATES['SRC_GET'],
+                             STATES['DST_IDX']: STATES['DST_GET'],
+                             STATES['DST_GET']: STATES['DST_PUT'],
+                             STATES['DST_PUT']: STATES['FETCH'],
+                             STATES['CALL1']: STATES['CALL2'],
+                             STATES['CALL2']: STATES['FETCH'],
+                             STATES['PUSH']: STATES['FETCH']})
 
-    print calcAreaDelay(mem_addr[:] + mem_in[:] + [isWrite])
-    return {'state': state, 'src_reg': src_reg, 'dst_reg': dst_reg,
+    print calcAreaDelay(mem_addr[:] + prev_mem_in.next[:])
+    return {'state': state.prev, 'src_reg': src_reg, 'dst_reg': dst_reg,
             'src_out': src_out, 'dst_out': dst_out, 'mem_addr': Vector(mem_addr), 'mem_out': mem_out,
-            'regs': regs, 'src': src, 'dst': dst, 'dst_in': dst_in, 'dst_wr': dst_wr, 'idx_addr': idx_addr,
-            'instr': instr, 'sr_in': sr_in, 'mem_in': mem_in}
+            'regs': regs, 'src': src.next, 'dst': dst.next, 'dst_in': dst_in, 'dst_wr': dst_wr,
+            'idx_addr': idx_addr.next,
+            'instr': instr, 'sr_in': sr_in, 'mem_in': prev_mem_in.next}

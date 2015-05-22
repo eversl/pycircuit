@@ -8,7 +8,7 @@ import unittest
 from PyCircuit import TestSignal, FullAdder, SRLatch, DLatch, DFlipFlop, \
     intToSignals, signalsToInt, RippleCarryAdder, Negate, Vector, Multiplier, \
     Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder, \
-    TestVector, Signal, DecimalAdder
+    TestVector, Signal, DecimalAdder, simplify
 from MSP430 import CPU, CodeSequence, N, R, B
 import MSP430
 
@@ -141,6 +141,22 @@ class Test(unittest.TestCase):
                     self.assertEqual(sum, a + b + c, "%i != %i (%i + %i + %i)" % (sum, a + b + c, a, b, c))
 
 
+    def test_Simplify(self):
+        for a in xrange(-256, 255, 67):
+            als = intToSignals(a, 16)
+            bls = TestVector(0, 16)
+            cs = TestSignal(0)
+            sls, c_out = KoggeStoneAdder(als, bls, cs)
+            sls, c_out = simplify(sls, c_out)
+            for b in xrange(-22756, 32767, 1453):
+                for c in xrange(2):
+                    bls[:] = b
+                    cs.set(c)
+                    sum = signalsToInt(sls, True)
+                    self.assertEqual(sum, a + b + c)
+                    self.assertEqual(c_out.value, a < 0)
+
+
     def test_arith(self):
         self.assertEquals(int(-TestVector(10)), -10)
         self.assertEquals(int(TestVector(10) + TestVector(-24)), 10 + -24)
@@ -236,7 +252,6 @@ class Test(unittest.TestCase):
 
     def test_MSP430RegisterFile(self):
         clk = TestSignal()
-        reset = TestSignal()
         src_reg = TestVector(0, 4)
         dst_reg = TestVector(0, 4)
         src_incr = TestSignal()
@@ -249,23 +264,24 @@ class Test(unittest.TestCase):
         src_out, dst_out, regs, src_incr_val = MSP430.RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode,
                                                                    dst_in, sr_in,
                                                                    dst_wr, bw,
-                                                                   clk, reset)
+                                                                   clk)
 
         dst_wr.set(True)
         for r in xrange(16):
+            if r == 3: continue  # register 3 is only constant generator
             dst_reg[:] = r
-            dst_in[:] = r * r * 4
+            dst_in[:] = r * r * (r + 1)
             clk.set()
             clk.reset()
             # print 'src_out', src_out
             self.assertEqual(int(src_out), 0)
             # print 'dst_out', dst_out
-            self.assertEqual(int(dst_out), r * r * 4)
+            self.assertEqual(int(dst_out), r * r * (r + 1))
 
         for r, reg in enumerate(regs):
             if r not in [2, 3]:
                 # print 'reg', r, reg
-                self.assertEqual(int(reg), r * r * 4)
+                self.assertEqual(int(reg), r * r * (r + 1))
 
         for r in xrange(16):
             sr_in[:] = r

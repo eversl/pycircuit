@@ -56,16 +56,30 @@ def simulate(signals, recur=None):
         simulate(next_signals, recur)
     else:
         if len(recur) > 0:
-            simulate(s for s in recur if recur[s] >= 8)
+            simulate(s for s in recur if recur[s] >= 4)
+
+
+def simplify(*args):
+    res = []
+    for arg in args:
+        if isinstance(arg, Vector):
+            pass
+        elif isinstance(arg, Signal):
+            arg = arg.simplify()
+        else:
+            arg = [a.simplify() for a in arg]
+        res.append(arg)
+    return tuple(res)
 
 
 class Signal(object):
-    __slots__ = ['fanout', 'value', 'args', 'name']
-
     def __init__(self, initval=False):
         self.args = []
         self.value = initval.value if isinstance(initval, Signal) else bool(initval)
         self.fanout = []
+
+    def simplify(self):
+        return self
 
     def __xor__(self, other):
         return Xor(self, other)
@@ -240,6 +254,10 @@ class Vector(object):
     def __hash__(self):
         return int(self)
 
+    # concatenate with list
+    def __radd__(self, other):
+        return Vector(other + self[:])
+
 
 class TestVector(Vector):
     def __init__(self, value, bits=16):
@@ -264,8 +282,9 @@ class TestVector(Vector):
 
 
 class FeedbackVector(Vector):
-    def __init__(self, value, bits=16, state=None):
-        Vector.__init__(self, value)
+    def __init__(self, value=None, bits=16, state=None):
+        if value is None: value = 0
+        super(FeedbackVector, self).__init__(value)
         if isinstance(value, Vector) and value.enum:
             self.enum = value.enum
         else:
@@ -276,6 +295,9 @@ class FeedbackVector(Vector):
             self.ls = [FeedbackSignal(b) for b in intToBits(int(value), bits)]
         else:
             self.ls = [s if isinstance(s, FeedbackSignal) else FeedbackSignal(s) for s in value]
+
+    def __getitem__(self, key):
+        return Vector.__getitem__(self, key)
 
     def connect(self, vec):
         for my_sig, other_sig in zip_all(self.ls, vec.ls):
@@ -334,12 +356,11 @@ def signalsToInt(ls, signed=True):
     num = 0
     for i in xrange(len(ls)):
         num |= (1 << i if ls[i].value else 0)
-    if signed and ls[-1].value:
+    if signed and len(ls) > 0 and ls[-1].value:
         num -= (1 << len(ls))
     return num
 
 
-# noinspection PyAbstractClass
 class CircuitOper(Signal):
     def __init__(self, *args):
         Signal.__init__(self)
@@ -349,20 +370,58 @@ class CircuitOper(Signal):
             arg.fanout.append(self)
         self.simulate()
 
+    def simplify(self):
+        self.args = [a.simplify() for a in self.args]
+        self.simplified = True
+        cs = []
+        vs = []
+        for arg in self.args:
+            if type(arg) is Signal:
+                cs.append(arg)
+            else:
+                vs.append(arg)
+
+        if cs == []:
+            return self
+        else:
+            cvals = [c.value for c in cs]
+            if vs == []:
+                return Signal(self.func(*cvals))
+            else:
+                return self.partial(vs, cvals)
+
 
 class And(CircuitOper):
     def func(self, *a):
         return reduce(lambda p, q: p & q, a)
+
+    def partial(self, args, consts):
+        cf = self.func(*consts)
+        v = args[0] if len(args) == 1 else And(*args)
+
+        return v if cf else Signal(False)
 
 
 class Or(CircuitOper):
     def func(self, *a):
         return reduce(lambda p, q: p | q, a)
 
+    def partial(self, args, consts):
+        cf = self.func(*consts)
+        v = args[0] if len(args) == 1 else Or(*args)
+
+        return Signal(True) if cf else v
+
 
 class Xor(CircuitOper):
-    def func(self, a, b):
-        return a ^ b
+    def func(self, *a):
+        return reduce(lambda p, q: p ^ q, a)
+
+    def partial(self, args, consts):
+        cf = self.func(*consts)
+        v = args[0] if len(args) == 1 else Xor(*args)
+
+        return Not(v) if cf else v
 
 
 class Not(CircuitOper):
@@ -399,7 +458,6 @@ class Enum(object):
 
     def __iter__(self):
         return self._dict.__iter__()
-
 
 
 def getDefault(val1, *vals):
@@ -678,5 +736,23 @@ def calcAreaDelay(inputs):
 
 
 def FlipFlops(dls, clk):
-    qs, _nqs = zip_all(*tuple(DFlipFlop(d, clk) for d in dls))
-    return Vector(qs)
+    res = zip_all(*tuple(DFlipFlop(d, clk) for d in dls))
+    if len(res) == 0:
+        return Vector([])
+    return Vector(res[0])
+
+
+class Register(FeedbackVector):
+    def __init__(self, clk, value=None, bits=16, state=None):
+        self.clk = clk
+        super(Register, self).__init__(value, bits, state)
+        self.next = self
+        self.prev = self
+
+    def connect(self, next):
+        self.next = next
+        FeedbackVector.connect(self, FlipFlops(next, self.clk))
+
+    def ccase(self, state, cases, default=None):
+        if default is None: default = self
+        self.connect(Case(state, cases, default))
