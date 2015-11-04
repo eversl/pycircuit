@@ -494,12 +494,13 @@ def getDefault(val1, *vals):
 
 def Case(state, cases, default=None):
     for k in cases.keys():
-        if not (isinstance(k, Vector) or isinstance(k, Signal)):
+        if not (isinstance(k, Vector) or isinstance(k, Signal) or isinstance(k, basestring)):
             v = cases[k]
             for kk in k:
                 cases[kk] = v
             del cases[k]
     if isinstance(state, Vector) and state.enum:
+        cases = {state.enum[k] if isinstance(k, basestring) else k: cases[k] for k in cases}
         for k in cases:
             if k.enum != state.enum:
                 raise ValueError("%s and %s are not of same enum type")
