@@ -62,6 +62,7 @@ def simplify(*args):
     """
     Replaces circuits by simpler, cheaper variants wherever it can by performing
     constant propagation, and replacing chained binary circuits by n-ary ones
+    Returns a tuple with replacements of the input arguments
     """
     new_args = []
     for arg in args:
@@ -582,7 +583,6 @@ def RippleCarryAdder(als, bls, c=Signal()):
 
 
 def KoggeStoneAdder(als, bls, c=Signal()):
-    sls = []
     prop_gen = {0: [(a ^ b,  # propagate
                      a & b)  # generate
                     for a, b in zip_all(als, bls)]}
@@ -597,9 +597,7 @@ def KoggeStoneAdder(als, bls, c=Signal()):
         step *= 2
 
     cls = [c] + [g for p, g in prop_gen[step / 2]]
-    for a, b, c in zip_all(als, bls, cls[:-1]):
-        s = a ^ b ^ c
-        sls.append(s)
+    sls = [a ^ b ^ c for a, b, c in zip_all(als, bls, cls[:-1])]
     return sls, cls[-1]
 
 
@@ -647,7 +645,7 @@ def If(pred, cons, alt):
     if isinstance(pred, Vector):
         pred = Or(*pred[:])
     npred = Not(pred)
-    return Vector([(pred & c) | (npred & a) for c, a in zip_all(cons, alt)])
+    return Vector((pred & c) | (npred & a) for c, a in zip_all(cons, alt))
 
 
 def SRLatch(s, r, init=False):

@@ -3,7 +3,7 @@ Created on Mar 21, 2014
 
 @author: leonevers
 '''
-from PyCircuit import Vector, Signal, Memory, Decoder, FlipFlops, FeedbackVector, If, zip_all, Or, \
+from PyCircuit import Vector, Signal, Memory, Decoder, FeedbackVector, If, zip_all, Or, \
     calcAreaDelay, \
     Enum, Case, EnumVector, KoggeStoneAdder, Negate, And, signalsToInt, DecimalAdder, TrueInCase, Register
 
@@ -12,17 +12,29 @@ def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, d
     dst_lines = Decoder(dst_reg)
     src_lines = Decoder(src_reg)
 
-    prev_src_incr_lines = FeedbackVector(0, len(src_lines))
-    prev_dst_wr_lines = FeedbackVector(0, len(dst_lines))
-    prev_dst_in = FeedbackVector(0, 16)
-    prev_src_incr_val = FeedbackVector(0, 16)
-    reg_sizes = [15, 15, 16, 0] + [16] * 12
-    prev_reg_vals = [FeedbackVector(0, sz) for sz in reg_sizes]
+    dst_wr_lines = Register(clk, 0, len(dst_lines))
+    dst_wr_lines.connect(dst_wr & dst_lines)
 
-    out_vals = [Vector([Signal(0)] * (16 - sz) + If(src_incr_line, prev_src_incr_val[16 - sz:],
-                                                    If(dst_wr_line, prev_dst_in[16 - sz:], prev_reg_val)))
-                for sz, src_incr_line, dst_wr_line, prev_reg_val in
-                zip_all(reg_sizes, prev_src_incr_lines, prev_dst_wr_lines, prev_reg_vals)]
+    src_incr_lines = Register(clk, 0, len(src_lines))
+    src_incr_lines.connect(src_incr & src_lines)
+
+    src_incr_val = Register(clk, 0, 16)
+    reg_sizes = [15, 15, 16, 0] + [16] * 12
+    registers = [Register(clk, 0, sz) for sz in reg_sizes]
+
+    prev_dst_in = Register(clk, 0, 16)
+    prev_dst_in.connect(dst_in)
+
+    out_vals = [Vector([Signal(0)] * (16 - sz) + If(src_incr_line, src_incr_val.prev[16 - sz:],
+                                                    If(dst_wr_line, prev_dst_in[16 - sz:], reg.prev)))
+                for sz, src_incr_line, dst_wr_line, reg in
+                zip_all(reg_sizes, src_incr_lines.prev, dst_wr_lines.prev, registers)]
+
+    for reg, reg_val in zip_all(registers, [
+        If(pc_incr, Vector(out[16 - sz:]) + Vector(1, 15), out[16 - sz:]) if out is out_vals[0] else
+        If(dst_wr & ~dst_lines[2], sr_in, out[16 - sz:]) if out is out_vals[2] else
+        out[16 - sz:] for sz, out in zip_all(reg_sizes, out_vals)]):
+        reg.connect(reg_val)
 
     cg_out_vals = [Case(src_mode, {SRC_M['M_INDEX']: Vector(0, 16),
                                    SRC_M['M_INDIRECT']: Vector(4, 16),
@@ -35,23 +47,9 @@ def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, d
     src_out = Vector([Or(*l) for l in zip(*(src_line & q_out for src_line, q_out in zip_all(src_lines, cg_out_vals)))])
     dst_out = Vector([Or(*l) for l in zip(*(dst_line & q_out for dst_line, q_out in zip_all(dst_lines, out_vals)))])
 
-    reg_vals = [If(pc_incr, Vector(out[16 - sz:]) + Vector(1, 15), out[16 - sz:]) if out is out_vals[0] else
-                If(dst_wr & ~dst_lines[2], sr_in, out[16 - sz:]) if out is out_vals[2] else
-                out[16 - sz:] for sz, out in zip_all(reg_sizes, out_vals)]
+    src_incr_val.connect(src_out + If(~ bw[0] | src_lines[0] | src_lines[1], Vector(2, 16), Vector(1, 16)))
 
-    for prev_reg_val, reg_val in zip_all(prev_reg_vals, reg_vals):
-        prev_reg_val.connect(FlipFlops(reg_val, clk))
-
-    src_incr_val = src_out + If(~ bw[0] | src_lines[0] | src_lines[1], Vector(2, 16), Vector(1, 16))
-    src_incr_lines = (src_incr & src_line for src_line in src_lines)
-    dst_wr_lines = (dst_wr & dst_line for dst_line in dst_lines)
-
-    prev_src_incr_val.connect(FlipFlops(src_incr_val, clk))
-    prev_src_incr_lines.connect(FlipFlops(src_incr_lines, clk))
-    prev_dst_wr_lines.connect(FlipFlops(dst_wr_lines, clk))
-    prev_dst_in.connect(FlipFlops(dst_in, clk))
-
-    return src_out, dst_out, out_vals, prev_src_incr_val
+    return src_out, dst_out, out_vals, src_incr_val.prev
 
 
 I_TYPES = Enum('IT_TWO', 'IT_NONE', 'IT_ONE', 'IT_JUMP')
