@@ -5,12 +5,12 @@ Created on Feb 6, 2014
 '''
 import unittest
 
+import MSP430
+from MSP430 import CPU, CodeSequence, N, R, B
 from PyCircuit import TestSignal, FullAdder, SRLatch, DLatch, DFlipFlop, \
     intToSignals, signalsToInt, RippleCarryAdder, Negate, Vector, Multiplier, \
     Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder, \
     TestVector, Signal, DecimalAdder, simplify
-from MSP430 import CPU, CodeSequence, N, R, B
-import MSP430
 
 
 class Test(unittest.TestCase):
@@ -140,6 +140,23 @@ class Test(unittest.TestCase):
                         ''.join(reversed([str(signalsToInt(d_sum[i:i + 4], False)) for i in xrange(0, len(d_sum), 4)])))
                     self.assertEqual(sum, a + b + c, "%i != %i (%i + %i + %i)" % (sum, a + b + c, a, b, c))
 
+    def test_SimplifyConst(self):
+        for a in xrange(-256, 255, 67):
+            for b in xrange(-22756, 32767, 1453):
+                als = intToSignals(a, 16)
+                bls = intToSignals(b, 16)
+            sls, c_out = KoggeStoneAdder(als, bls)
+            n_ad = calcAreaDelay(als[:] + bls[:])
+            print 'Before:', n_ad,
+
+            sls, c_out = simplify(sls, c_out)
+
+            n_ad = calcAreaDelay(als[:] + bls[:])
+            print 'After:', n_ad
+
+            sum = signalsToInt(sls, True)
+            self.assertEqual(sum, a + b)
+            self.assertEqual(c_out.value, a < 0)
 
     def test_Simplify(self):
         for a in xrange(-256, 255, 67):
@@ -147,7 +164,14 @@ class Test(unittest.TestCase):
             bls = TestVector(0, 16)
             cs = TestSignal(0)
             sls, c_out = KoggeStoneAdder(als, bls, cs)
+            n_ad = calcAreaDelay(als[:] + bls[:] + [cs])
+            print 'Before:', a, ':', n_ad,
+
             sls, c_out = simplify(sls, c_out)
+
+            n_ad = calcAreaDelay(als[:] + bls[:] + [cs])
+            print 'After: :', n_ad
+
             for b in xrange(-22756, 32767, 1453):
                 for c in xrange(2):
                     bls[:] = b
@@ -232,14 +256,14 @@ class Test(unittest.TestCase):
             self.assertEqual(int(data1), i)
             self.assertEqual(int(data2), (i + 1) % 2 ** 3)
 
-    def _test_AdderDelay(self):
+    def test_AdderDelay(self):
         for bitlen in xrange(2, 65):
-            a = Vector(-1, bitlen)
-            b = Vector(-1, bitlen)
-            m, m_c = RippleCarryAdder(a, b)
-            c = Vector(-1, bitlen)
-            d = Vector(-1, bitlen)
-            n, n_c = KoggeStoneAdder(c, d)
+            a = TestVector(-1, bitlen)
+            b = TestVector(-1, bitlen)
+            m, m_c = simplify(*RippleCarryAdder(a, b))
+            c = TestVector(-1, bitlen)
+            d = TestVector(-1, bitlen)
+            n, n_c = simplify(*KoggeStoneAdder(c, d))
 
             m_ad = calcAreaDelay(a[:] + b[:])
             print 'RippleCarryAdder:', bitlen, ':', m_ad
@@ -247,7 +271,7 @@ class Test(unittest.TestCase):
             n_ad = calcAreaDelay(c[:] + d[:])
             print 'KoggeStoneAdder:', bitlen, ':', n_ad
             self.assertLess(m_ad[0], n_ad[0])
-            self.assertGreater(m_ad[1], n_ad[1])
+            self.assertGreaterEqual(m_ad[1], n_ad[1])
 
 
     def test_MSP430RegisterFile(self):

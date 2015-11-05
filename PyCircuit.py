@@ -58,18 +58,21 @@ def simulate(signals, recur=None):
         if len(recur) > 0:
             simulate(s for s in recur if recur[s] >= 4)
 
-
 def simplify(*args):
-    res = []
+    """
+    Replaces circuits by simpler, cheaper variants wherever it can by performing
+    constant propagation, and replacing chained binary circuits by n-ary ones
+    """
+    new_args = []
     for arg in args:
         if isinstance(arg, Vector):
-            pass
+            print "simplify Vector!!"
         elif isinstance(arg, Signal):
             arg = arg.simplify()
         else:
             arg = [a.simplify() for a in arg]
-        res.append(arg)
-    return tuple(res)
+        new_args.append(arg)
+    return tuple(new_args)
 
 
 class Signal(object):
@@ -100,7 +103,7 @@ class Signal(object):
         return Vector([self] * other)
 
     def __repr__(self):
-        return '{0}({1})'.format(type(self).__name__, self.value)
+        return '{0}({1}) [#{2:X}]'.format(type(self).__name__, self.value, id(self))
 
     def __len__(self):
         return 1
@@ -364,15 +367,30 @@ def signalsToInt(ls, signed=True):
 class CircuitOper(Signal):
     def __init__(self, *args):
         Signal.__init__(self)
-        self.args = args
+        self.args = list(args)
 
         for arg in args:
             arg.fanout.append(self)
         self.simulate()
 
+    def partial(self, args, consts):
+        cf = self.func(*consts)
+        if len(args) == 1:
+            v = args[0]
+        else:
+            self.args = args
+            v = self
+
+        return self.constPartial(v, cf)
+
     def simplify(self):
         self.args = [a.simplify() for a in self.args]
-        self.simplified = True
+        for f in self.fanout:
+            assert self in f.args
+        for a in self.args:
+            assert self in a.fanout
+            a.fanout.remove(self)
+
         cs = []
         vs = []
         for arg in self.args:
@@ -381,24 +399,46 @@ class CircuitOper(Signal):
             else:
                 vs.append(arg)
 
-        if cs == []:
-            return self
+        sameArgs = [a for a in self.args if type(a) == type(self) and a.fanout == []]
+        if sameArgs:
+            res = sameArgs[0]
+            res.args.extend(a for a in self.args if a != res)
+
+        elif cs == []:
+            res = self
         else:
             cvals = [c.value for c in cs]
             if vs == []:
-                return Signal(self.func(*cvals))
+                res = Signal(self.func(*cvals))
             else:
-                return self.partial(vs, cvals)
+                res = self.partial(vs, cvals)
+
+        if res != self:
+            for f in self.fanout:
+                f.args[f.args.index(self)] = res
+            res.fanout.extend(self.fanout)
+            self.fanout = []
+            self.args = []
+        else:
+            pass
+
+        for a in res.args:
+            a.fanout.append(res)
+
+        for f in res.fanout:
+            assert res in f.args
+
+        if sameArgs and cs:
+            return res.simplify()
+        return res
+
 
 
 class And(CircuitOper):
     def func(self, *a):
         return reduce(lambda p, q: p & q, a)
 
-    def partial(self, args, consts):
-        cf = self.func(*consts)
-        v = args[0] if len(args) == 1 else And(*args)
-
+    def constPartial(self, v, cf):
         return v if cf else Signal(False)
 
 
@@ -406,10 +446,7 @@ class Or(CircuitOper):
     def func(self, *a):
         return reduce(lambda p, q: p | q, a)
 
-    def partial(self, args, consts):
-        cf = self.func(*consts)
-        v = args[0] if len(args) == 1 else Or(*args)
-
+    def constPartial(self, v, cf):
         return Signal(True) if cf else v
 
 
@@ -417,10 +454,7 @@ class Xor(CircuitOper):
     def func(self, *a):
         return reduce(lambda p, q: p ^ q, a)
 
-    def partial(self, args, consts):
-        cf = self.func(*consts)
-        v = args[0] if len(args) == 1 else Xor(*args)
-
+    def constPartial(self, v, cf):
         return Not(v) if cf else v
 
 
@@ -733,7 +767,7 @@ def calcAreaDelay(inputs):
                           if not isinstance(c, FeedbackSignal)))
 
         i += 1
-    return len(set().union(*levels)), i - 1
+    return len(set().union(*levels[1:])), i - 1
 
 
 def FlipFlops(dls, clk):
