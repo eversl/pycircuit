@@ -3,9 +3,8 @@ Created on Mar 21, 2014
 
 @author: leonevers
 '''
-from PyCircuit import Vector, Signal, Memory, Decoder, FeedbackVector, If, zip_all, Or, \
-    calcAreaDelay, \
-    Enum, Case, EnumVector, KoggeStoneAdder, Negate, And, signalsToInt, DecimalAdder, TrueInCase, Register
+from PyCircuit import Vector, Signal, Memory, Decoder, FeedbackVector, If, zip_all, Or, calcAreaDelay, \
+    Enum, Case, EnumVector, KoggeStoneAdder, And, signalsToInt, DecimalAdder, TrueInCase, Register
 
 
 def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, dst_wr, bw, clk):
@@ -25,8 +24,8 @@ def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, d
     prev_dst_in = Register(clk, 0, 16)
     prev_dst_in.connect(dst_in)
 
-    out_vals = [Vector([Signal(0)] * (16 - sz) + If(src_incr_line, src_incr_val.prev[16 - sz:],
-                                                    If(dst_wr_line, prev_dst_in[16 - sz:], reg.prev)))
+    out_vals = [If(src_incr_line, src_incr_val.prev[16 - sz:],
+                   If(dst_wr_line, prev_dst_in[16 - sz:], reg.prev)).extendTo(16, LSB=True)
                 for sz, src_incr_line, dst_wr_line, reg in
                 zip_all(reg_sizes, src_incr_lines.prev, dst_wr_lines.prev, registers)]
 
@@ -386,7 +385,7 @@ def alu(instr, src, dst_in, flags_in, bw):
     def calc_alu(fn, *args):
         out, flags_upd = fn(*args)
         n_out = out[-1]  # negative equals sign bit
-        z_out = And(*(~(a ^ b) for a, b in zip_all(Vector(out), Vector(0, len(out)))))
+        z_out = And(*Vector(~(a ^ b) for a, b in zip_all(Vector(out), Vector(0, len(out)))))
         c_out = ~z_out
         v_out = Signal(0)
         src[-1] & dst_in[-1]
@@ -399,7 +398,7 @@ def alu(instr, src, dst_in, flags_in, bw):
 
     def do_add_sub(als, bls, c, instr):
         bls = Case(instr, {(INSTRS['ADD'], INSTRS['ADDC']): bls,
-                           (INSTRS['SUB'], INSTRS['SUBC'], INSTRS['CMP']): Vector(Negate(bls))})
+                           (INSTRS['SUB'], INSTRS['SUBC'], INSTRS['CMP']): -bls})
         sls, c_out = KoggeStoneAdder(als, bls, c)
         v_out = (als[-1] ^ sls[-1]) & (bls[-1] ^ sls[-1])
         return (Vector(sls)), {'c': c_out, 'v': v_out}
@@ -563,7 +562,7 @@ def CPU(mem_init, clk):
                      src_incr=Case(state.prev, {STATES['SRC_INCR']: Signal(True)}),
                      src_mode=a_s,
                      dst_in=Case(inst_bw,
-                                 {BYTE_WORD['BYTE']: Vector(dst_in[:8] + [Signal()] * 8),
+                                 {BYTE_WORD['BYTE']: Vector(dst_in[:8]).extendTo(16),
                                   BYTE_WORD['WORD']: dst_in}),
                      sr_in=sr_in,
                      dst_wr=dst_wr,
@@ -587,7 +586,7 @@ def CPU(mem_init, clk):
     dst.ccase(state.prev, {STATES['FETCH']: dst_out,
                            STATES['DST_GET']:
                                Case(inst_bw,
-                                    {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(mem_out[8:] + mem_out[:8]),
+                                    {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(mem_out[8:]).concat(mem_out[:8]),
                                                            mem_out),
                                      BYTE_WORD['WORD']: mem_out})})
 
@@ -605,8 +604,9 @@ def CPU(mem_init, clk):
     status_reg_out = Vector(flag_for_bit(n, b) for n, b in enumerate(regs[2]))
 
     prev_mem_in.ccase(instr, {INSTRS['CALL']: pc_reg},
-                      Case(inst_bw, {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(alu_out[8:] + alu_out[:8]), dst_in),
-                                     BYTE_WORD['WORD']: alu_out}))
+                      Case(inst_bw,
+                           {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(alu_out[8:]).concat(alu_out[:8]), dst_in),
+                            BYTE_WORD['WORD']: alu_out}))
 
     dst_in.connect(Case(state.prev, {('PUSH', 'CALL1'): sp_reg}, alu_out))
     sr_in.connect(status_reg_out)

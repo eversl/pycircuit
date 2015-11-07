@@ -126,6 +126,8 @@ class Signal(object):
             self.value = value
             return self.fanout
 
+    def current(self):
+        return self.value
 
 class TestSignal(Signal):
     def set(self, value=True):
@@ -186,10 +188,10 @@ class Vector(object):
         return iter(self.ls)
 
     def __add__(self, other):
-        return Vector(KoggeStoneAdder(self, other)[0])
+        return KoggeStoneAdder(self, other)[0]
 
     def __sub__(self, other):
-        return Vector(KoggeStoneAdder(self, -other)[0])
+        return KoggeStoneAdder(self, -other)[0]
 
     def __mul__(self, other):
         return Vector(Multiplier(self, other))
@@ -259,8 +261,34 @@ class Vector(object):
         return int(self)
 
     # concatenate with list
-    def __radd__(self, other):
-        return Vector(other + self[:])
+    # def __radd__(self, other):
+    #     return Vector(other + self[:])
+
+    def append(self, other):
+        self.ls += other.ls if isinstance(other, Vector) else [other] if isinstance(other, Signal) else other[:]
+
+    def concat(self, *others):
+        lss = [o.ls if isinstance(o, Vector) else [o] if isinstance(o, Signal) else o[:] for o in others]
+        return Vector(self.ls + sum(lss, []))
+
+    def extendBy(self, l, LSB=False):
+        if LSB:
+            res = Vector(0, l)
+            res.append(self)
+            return res
+        else:
+            return self.concat(Vector(0, l))
+
+    def extendTo(self, l, LSB=False):
+        return self.extendBy(l - len(self), LSB)
+
+    def current(self):
+        vals = [s.current() for s in self.ls]
+        return vals
+
+    @classmethod
+    def op(cls, fn, *args):
+        return Vector(fn(*a) for a in zip_all(*args))
 
 
 class TestVector(Vector):
@@ -433,6 +461,8 @@ class CircuitOper(Signal):
             return res.simplify()
         return res
 
+    def current(self):
+        return self.func(*(a.current() for a in self.args))
 
 
 class And(CircuitOper):
@@ -575,7 +605,7 @@ def FullAdder(a, b, c_in):
 
 
 def RippleCarryAdder(als, bls, c=Signal()):
-    sls = []
+    sls = Vector(0, 0)
     for a, b in zip_all(als, bls):
         s, c = FullAdder(a, b, c)
         sls.append(s)
@@ -597,7 +627,7 @@ def KoggeStoneAdder(als, bls, c=Signal()):
         step *= 2
 
     cls = [c] + [g for p, g in prop_gen[step / 2]]
-    sls = [a ^ b ^ c for a, b, c in zip_all(als, bls, cls[:-1])]
+    sls = Vector.op(lambda a, b, c: a ^ b ^ c, als, bls, cls[:-1])
     return sls, cls[-1]
 
 
@@ -612,32 +642,27 @@ def DecimalAdder(src, dst_in, c_in):
         c_in = ~adjusted[-1]
         dst_out.append(If(c_in, adjusted[:-1], sum_n[:-1]))
 
-    return [dd for d in dst_out for dd in d], c_in
+    return Vector(dd for d in dst_out for dd in d), c_in
 
 
-def Negate(als):
-    sls, _ = RippleCarryAdder([Not(a) for a in als], [Signal()] * len(als), Signal(True))
-    return sls
 
 
 def Multiplier(als, bls, signed=True):
     if signed:
         als_sign = als[-1]
         bls_sign = bls[-1]
-        als = If(als_sign, Negate(als), als)
-        bls = If(bls_sign, Negate(bls), bls)
-    else:
-        als = [a for a in als]  # to make sure Vectors are made to lists
-        bls = [b for b in bls]
-    sls, c = [Signal()] * (len(bls) - 1), Signal()
-    for a in als:
-        sls, c = RippleCarryAdder([a & b for b in bls], sls + [c])
-        bls = [Signal()] + bls
+        als = If(als_sign, -als, als)
+        bls = If(bls_sign, -bls, bls)
 
-    res = sls + [c]
+    sls, c = Vector(0, len(bls) - 1), Signal()
+    for a in als:
+        sls, c = RippleCarryAdder(a & bls, sls.concat(c))
+        bls = bls.extendBy(1, LSB=True)
+
+    res = sls.concat(c)
     if signed:
         sls_sign = als_sign ^ bls_sign
-        res = If(sls_sign, Negate(res), res)
+        res = If(sls_sign, -res, res)
     return res
 
 
@@ -713,7 +738,7 @@ def Multiplexer(sel, alts):
             for alt in alts[1:]:
                 if not isinstance(alt, Signal):
                     raise TypeError()
-            return Or(*[l & en for (l, en) in zip_all(alts, enables)])
+            return Or(*Vector(l & en for (l, en) in zip_all(alts, enables)))
         elif isinstance(alt0, dict):
             typ = type(alt0)
             keys = set(alt0.keys())
@@ -779,7 +804,7 @@ class Register(FeedbackVector):
     def __init__(self, clk, value=None, bits=16, state=None):
         self.clk = clk
         super(Register, self).__init__(value, bits, state)
-        self.next = self
+        self.next = None
         self.prev = self
 
     def connect(self, next):
