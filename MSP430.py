@@ -4,7 +4,7 @@ Created on Mar 21, 2014
 @author: leonevers
 '''
 from PyCircuit import Vector, Signal, Memory, Decoder, FeedbackVector, If, zip_all, Or, calcAreaDelay, \
-    Enum, Case, EnumVector, KoggeStoneAdder, And, signalsToInt, DecimalAdder, TrueInCase, Register
+    Enum, Case, EnumVector, KoggeStoneAdder, And, DecimalAdder, TrueInCase, Register
 
 
 def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, dst_wr, bw, clk):
@@ -61,9 +61,9 @@ FLAGS = 'cznv'
 def decodeInstr(word):
     inst_type = EnumVector(I_TYPES, If(word[15] | (~word[15] & word[14]), I_TYPES['IT_TWO'],
                                        If(word[13], I_TYPES['IT_JUMP'], I_TYPES['IT_ONE'])))
-    instr = EnumVector(INSTRS, If(word[15] | (~word[15] & word[14]), Vector(word[12:] + [Signal()]),
-                                  If(word[13], Vector(word[10:13] + I_TYPES['IT_JUMP'][:]),
-                                     Vector(word[7:10] + I_TYPES['IT_ONE'][:]))))
+    instr = EnumVector(INSTRS, If(word[15] | (~word[15] & word[14]), Vector(word[12:]).extendBy(1),
+                                  If(word[13], Vector(word[10:13]).concat(I_TYPES['IT_JUMP']),
+                                     Vector(word[7:10]).concat(I_TYPES['IT_ONE']))))
     dst_reg = Case(inst_type, {I_TYPES['IT_JUMP']: Vector(0, 4)},
                    Vector(word[0:4]))
     src_reg = Case(inst_type, {I_TYPES['IT_TWO']: Vector(word[8:12]),
@@ -178,8 +178,8 @@ JMP_INSTR = {'JNZ': 0b000,
              'JMP': 0b111}
 
 INSTRS = Enum(dict(TWO_INSTR.items() +
-                   [(i, ONE_INSTR[i] + (signalsToInt(I_TYPES['IT_ONE'], False) << 3)) for i in ONE_INSTR] +
-                   [(i, JMP_INSTR[i] + (signalsToInt(I_TYPES['IT_JUMP'], False) << 3)) for i in JMP_INSTR]))
+                   [(i, ONE_INSTR[i] + (I_TYPES['IT_ONE'].toUint() << 3)) for i in ONE_INSTR] +
+                   [(i, JMP_INSTR[i] + (I_TYPES['IT_JUMP'].toUint() << 3)) for i in JMP_INSTR]))
 B = True
 
 
@@ -425,16 +425,16 @@ def alu(instr, src, dst_in, flags_in, bw):
         return out, flags_in
 
     def do_rrot(in_val, msb):
-        out = Vector(in_val[1:] + [msb])
+        out = in_val[1:].concat(msb)
         return out, {'c': in_val[0],
                      'v': ~in_val[-1] & msb}
 
     def do_swpb(src):
-        out = Vector(src[8:16] + src[0:8]) if len(src) == 16 else src
+        out = src[8:16].concat(src[0:8]) if len(src) == 16 else src
         return out, flags_in
 
     def do_sxt(src):
-        out = Vector(src[:7] + ([src[7]] * (len(src) - 7)))
+        out = src[:7].concat(Vector([src[7]] * (len(src) - 7)))
         return out, {}
 
     def do_jmp(src, dst_in):
@@ -470,8 +470,8 @@ def alu(instr, src, dst_in, flags_in, bw):
         return Case(instr, {(INSTRS['CMP'], INSTRS['BIT']): dst_in}, dst_out), flags_out
 
     dst_out, flags_out = Case(bw, {
-        BYTE_WORD['BYTE']: (lambda dst_out, flags_out: (Vector(dst_out[:8] + dst_in[8:]), flags_out))(
-            *op(Vector(src[:8]), Vector(dst_in[:8]))),
+        BYTE_WORD['BYTE']: (lambda dst_out, flags_out: (dst_out[:8].concat(dst_in[8:]), flags_out))(
+            *op(src[:8], dst_in[:8])),
         BYTE_WORD['WORD']: op(src, dst_in)
     })
 
@@ -579,8 +579,8 @@ def CPU(mem_init, clk):
                                 STATES['SRC_INDIRECT']: src_out})
 
     src.ccase(state.prev, {STATES['FETCH']: Case(inst_type, {I_TYPES['IT_JUMP']:
-        Vector(
-            [Signal()] + offset[:] + [offset[-1]] * 5)},
+                                                                 offset.extendBy(1, LSB=True).extendTo(16,
+                                                                                                       signed=True)},
                                                  src_out),
                            (STATES['SRC_INDIRECT'], STATES['SRC_INCR'], STATES['SRC_GET']): mem_out})
     dst.ccase(state.prev, {STATES['FETCH']: dst_out,
@@ -655,7 +655,7 @@ def CPU(mem_init, clk):
                              'CALL2': STATES['FETCH'],
                              'PUSH': STATES['FETCH']})
 
-    print calcAreaDelay(mem_addr[:] + prev_mem_in.next[:])
+    print calcAreaDelay(mem_addr.concat(prev_mem_in.next))
     return {'state': state.prev, 'src_reg': src_reg, 'dst_reg': dst_reg,
             'src_out': src_out, 'dst_out': dst_out, 'mem_addr': Vector(mem_addr), 'mem_out': mem_out,
             'regs': regs, 'src': src.next, 'dst': dst.next, 'dst_in': dst_in, 'dst_wr': dst_wr,

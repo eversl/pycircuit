@@ -108,8 +108,8 @@ class Test(unittest.TestCase):
         for a in xrange(-256, 255, 67):
             for b in xrange(-22756, 32767, 1453):
                 for c in xrange(2):
-                    als = intToSignals(a, 16)
-                    bls = intToSignals(b, 16)
+                    als = Vector(a, 16)
+                    bls = Vector(b, 16)
                     sls, c_out = RippleCarryAdder(als, bls, Signal(c))
                     sum = signalsToInt(sls, True)
                     self.assertEqual(sum, a + b + c)
@@ -120,8 +120,8 @@ class Test(unittest.TestCase):
         for a in xrange(-256, 255, 67):
             for b in xrange(-22756, 32767, 1453):
                 for c in xrange(2):
-                    als = intToSignals(a, 16)
-                    bls = intToSignals(b, 16)
+                    als = Vector(a, 16)
+                    bls = Vector(b, 16)
                     sls, c_out = KoggeStoneAdder(als, bls, Signal(c))
                     sum = signalsToInt(sls, True)
                     self.assertEqual(sum, a + b + c)
@@ -131,8 +131,8 @@ class Test(unittest.TestCase):
         for a in xrange(-256, 255, 67):
             for b in xrange(-22756, 32767, 1453):
                 for c in xrange(2):
-                    als = intToSignals(a, 16)
-                    bls = intToSignals(b, 16)
+                    als = Vector(a, 16)
+                    bls = Vector(b, 16)
                     sls, c_out = KoggeStoneAdder(als, bls, Signal(c))
 
                     print sls.current()
@@ -157,15 +157,15 @@ class Test(unittest.TestCase):
     def test_SimplifyConst(self):
         for a in xrange(-256, 255, 67):
             for b in xrange(-22756, 32767, 1453):
-                als = intToSignals(a, 16)
-                bls = intToSignals(b, 16)
+                als = Vector(a, 16)
+                bls = Vector(b, 16)
             sls, c_out = KoggeStoneAdder(als, bls)
-            n_ad = calcAreaDelay(als[:] + bls[:])
+            n_ad = calcAreaDelay(als.concat(bls))
             print 'Before:', n_ad,
 
             sls, c_out = simplify(sls, c_out)
 
-            n_ad = calcAreaDelay(als[:] + bls[:])
+            n_ad = calcAreaDelay(als.concat(bls))
             print 'After:', n_ad
 
             sum = signalsToInt(sls, True)
@@ -174,16 +174,16 @@ class Test(unittest.TestCase):
 
     def test_Simplify(self):
         for a in xrange(-256, 255, 67):
-            als = intToSignals(a, 16)
+            als = Vector(a, 16)
             bls = TestVector(0, 16)
             cs = TestSignal(0)
             sls, c_out = KoggeStoneAdder(als, bls, cs)
-            n_ad = calcAreaDelay(als[:] + bls[:] + [cs])
+            n_ad = calcAreaDelay(als.concat(bls, cs))
             print 'Before:', a, ':', n_ad,
 
             sls, c_out = simplify(sls, c_out)
 
-            n_ad = calcAreaDelay(als[:] + bls[:] + [cs])
+            n_ad = calcAreaDelay(als.concat(bls, cs))
             print 'After: :', n_ad
 
             for b in xrange(-22756, 32767, 1453):
@@ -279,13 +279,13 @@ class Test(unittest.TestCase):
             d = TestVector(-1, bitlen)
             n, n_c = simplify(*KoggeStoneAdder(c, d))
 
-            m_ad = calcAreaDelay(a[:] + b[:])
+            m_ad = calcAreaDelay(a.concat(b))
             print 'RippleCarryAdder:', bitlen, ':', m_ad
 
-            n_ad = calcAreaDelay(c[:] + d[:])
+            n_ad = calcAreaDelay(c.concat(d))
             print 'KoggeStoneAdder:', bitlen, ':', n_ad
             self.assertLess(m_ad[0], n_ad[0])
-            # self.assertGreaterEqual(m_ad[1], n_ad[1])
+            self.assertGreaterEqual(m_ad[1], n_ad[1])
 
 
     def test_MSP430RegisterFile(self):

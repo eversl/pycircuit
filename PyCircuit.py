@@ -67,7 +67,7 @@ def simplify(*args):
     new_args = []
     for arg in args:
         if isinstance(arg, Vector):
-            print "simplify Vector!!"
+            arg = Vector(a.simplify() for a in arg)
         elif isinstance(arg, Signal):
             arg = arg.simplify()
         else:
@@ -182,7 +182,10 @@ class Vector(object):
         return len(self.ls)
 
     def __getitem__(self, key):
-        return self.ls[key]
+        if isinstance(key, slice):
+            return Vector(self.ls[key])
+        else:
+            return self.ls[key]
 
     def __iter__(self):
         return iter(self.ls)
@@ -264,6 +267,11 @@ class Vector(object):
     # def __radd__(self, other):
     #     return Vector(other + self[:])
 
+
+    def toUint(self):
+        return signalsToInt(self.ls, False)
+
+
     def append(self, other):
         self.ls += other.ls if isinstance(other, Vector) else [other] if isinstance(other, Signal) else other[:]
 
@@ -271,16 +279,18 @@ class Vector(object):
         lss = [o.ls if isinstance(o, Vector) else [o] if isinstance(o, Signal) else o[:] for o in others]
         return Vector(self.ls + sum(lss, []))
 
-    def extendBy(self, l, LSB=False):
+    def extendBy(self, l, LSB=False, signed=False, signal=Signal(0)):
+        if signed:
+            signal = self.ls[-1]
         if LSB:
-            res = Vector(0, l)
+            res = Vector([signal] * l)
             res.append(self)
             return res
         else:
-            return self.concat(Vector(0, l))
+            return self.concat([signal] * l)
 
-    def extendTo(self, l, LSB=False):
-        return self.extendBy(l - len(self), LSB)
+    def extendTo(self, l, LSB=False, signed=False, signal=Signal(0)):
+        return self.extendBy(l - len(self), LSB, signed, signal)
 
     def current(self):
         vals = [s.current() for s in self.ls]
@@ -531,7 +541,7 @@ def getDefault(val1, *vals):
             if not isinstance(val, Vector):
                 raise TypeError("Expected a %s but got a %s" % (Vector, type(val)))
             if not len(val) == len(val1):
-                raise ValueError("Vectors are not of same size")
+                raise ValueError("Vectors are not of same size, {0} vs {1}".format(val, val1))
         return Vector(0, len(val1))
     elif isinstance(val1, Signal):
         for val in vals:
@@ -613,26 +623,30 @@ def RippleCarryAdder(als, bls, c=Signal()):
 
 
 def KoggeStoneAdder(als, bls, c=Signal()):
-    prop_gen = {0: [(a ^ b,  # propagate
-                     a & b)  # generate
-                    for a, b in zip_all(als, bls)]}
+    prop = {0: Vector.op(lambda a, b: a ^ b, als, bls)}
+    gen = {0: Vector.op(lambda a, b: a & b, als, bls)}
 
     step = 1
-    while step < len(prop_gen[0]):
-        prop_gen[step] = []
-        for i in xrange(len(prop_gen[0])):
-            p_i, g_i = prop_gen[step / 2][i]
-            p_prev, g_prev = prop_gen[step / 2][i - step] if i - step >= 0 else (Signal(0), c)
-            prop_gen[step].append((p_i & p_prev, (p_i & g_prev) | g_i))
+    while step < len(als):
+        p = prop[step / 2]
+        g = gen[step / 2]
+
+        p_prev = p[:-step].extendTo(len(p),
+                                    LSB=True)  # Vector(p[i - step] if i - step >= 0 else Signal(0) for i in xrange(len(p)))
+        g_prev = g[:-step].extendTo(len(g), LSB=True,
+                                    signal=c)  # Vector(g[i - step] if i - step >= 0 else c for i in xrange(len(p)))
+        # g_prev = Vector(g[i - step] if i - step >= 0 else c for i in xrange(len(g)))
+        prop[step] = p & p_prev
+        gen[step] = (p & g_prev) | g
         step *= 2
 
-    cls = [c] + [g for p, g in prop_gen[step / 2]]
+    cls = Vector(c).concat(gen[step / 2])
     sls = Vector.op(lambda a, b, c: a ^ b ^ c, als, bls, cls[:-1])
     return sls, cls[-1]
 
 
 def DecimalAdder(src, dst_in, c_in):
-    nibbles = [(Vector(src[i:i + 4] + [Signal(0)]), Vector(dst_in[i:i + 4] + [Signal(0)])) for i in
+    nibbles = [(src[i:i + 4].extendBy(1), dst_in[i:i + 4].extendBy(1)) for i in
                xrange(0, len(src), 4)]
     dst_out = []
     for src_n, dst_n in nibbles:
@@ -700,7 +714,7 @@ def Decoder(a):
     else:
         sub = Decoder(a[:-1])
         not_a = ~a[-1]
-        return Vector([not_a & d for d in sub] + [a[-1] & d for d in sub])
+        return Vector(not_a & d for d in sub).concat(sub & a[-1])
 
 
 def GuardedMemory(mem_addr, data, isWrite, init=None):
@@ -781,6 +795,8 @@ def RegisterFile(addr1, addr2, addr_w, data_w, clk_w):
 
 
 def calcAreaDelay(inputs):
+    if isinstance(inputs, Vector):
+        inputs = inputs.ls
     levels = [set(inputs)]
     i = 0
     while len(levels[i]) > 0:
