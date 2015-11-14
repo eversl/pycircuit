@@ -466,14 +466,13 @@ def alu(instr, src, dst_in, flags_in, bw):
             INSTRS['SXT']: calc_alu(do_sxt, src),
             (INSTRS['JNZ'], INSTRS['JZ'], INSTRS['JNC'], INSTRS['JC'],
              INSTRS['JN'], INSTRS['JGE'], INSTRS['JL'], INSTRS['JMP']):
-                calc_alu(do_jmp, src, dst_in)})
+                calc_alu(do_jmp, src, dst_in)}, (Vector(0, len(dst_in)), {k: Signal() for k in FLAGS}))
         return Case(instr, {(INSTRS['CMP'], INSTRS['BIT']): dst_in}, dst_out), flags_out
 
     dst_out, flags_out = Case(bw, {
         BYTE_WORD['BYTE']: (lambda dst_out, flags_out: (dst_out[:8].concat(dst_in[8:]), flags_out))(
             *op(src[:8], dst_in[:8])),
-        BYTE_WORD['WORD']: op(src, dst_in)
-    })
+        BYTE_WORD['WORD']: op(src, dst_in)}, (Vector(0, len(dst_in)), {k: Signal() for k in FLAGS}))
 
     return dst_out, flags_out
 
@@ -515,13 +514,13 @@ def CPU(mem_init, clk):
     mem_out = Memory(mem_addr[1:8], prev_mem_in.prev,
                      TrueInCase(state.prev, ('DST_PUT', 'PUSH', 'CALL1')), mem_init)
 
-    instr_word.ccase(state.prev, {STATES['FETCH']: mem_out})
+    instr_word.ccase(state.prev, {'FETCH': mem_out})
 
     instr, inst_type, src_reg, dst_reg, inst_bw, a_s, a_d, offset = decodeInstr(instr_word.next)
 
     flags_in = {v: sr_reg[FLAGS_SR_BITS[v]] for v in FLAGS_SR_BITS}
 
-    dst_wr = (TrueInCase(state.prev, {STATES['FETCH']:
+    dst_wr = (TrueInCase(state.prev, {'FETCH':
                                           Case(inst_type, {I_TYPES['IT_TWO']:
                                                                TrueInCase(a_s, {
                                                                    SRC_M['M_DIRECT']: TrueInCase(a_d,
@@ -532,16 +531,17 @@ def CPU(mem_init, clk):
                                                                                   {(Vector(2, 4), Vector(3, 4)):
                                                                                        TrueInCase(a_d, DST_M[
                                                                                            'M_DIRECT'])})}),
-                                                           I_TYPES['IT_ONE']: TrueInCase(a_s, SRC_M['M_DIRECT'])}),
-                                      (STATES['SRC_INDIRECT'], STATES['SRC_INCR'], STATES['SRC_GET']):
+                                                           I_TYPES['IT_ONE']: TrueInCase(a_s, SRC_M['M_DIRECT'])},
+                                               Signal()),
+                                      ('SRC_INDIRECT', 'SRC_INCR', 'SRC_GET'):
                                           TrueInCase(inst_type,
                                                      {I_TYPES['IT_TWO']: TrueInCase(a_d, DST_M['M_DIRECT'])}),
                                       STATES["DST_GET"]: TrueInCase(inst_type, I_TYPES['IT_TWO'])}) & \
               TrueInCase(inst_type, {I_TYPES['IT_TWO']: TrueInCase(a_d, DST_M['M_DIRECT']),
                                      I_TYPES['IT_ONE']: TrueInCase(a_s, SRC_M['M_DIRECT'])}) & \
               ~TrueInCase(instr, INSTRS['PUSH'])) | \
-             TrueInCase(instr, {'PUSH': TrueInCase(state.prev, STATES['PUSH']),
-                                'CALL': TrueInCase(state.prev, (STATES['CALL1'], STATES['CALL2'])),
+             TrueInCase(instr, {'PUSH': TrueInCase(state.prev, ('PUSH',)),
+                                'CALL': TrueInCase(state.prev, ('CALL1', 'CALL2')),
                                 'JMP': Signal(True),
                                 'JNZ': ~flags_in['z'],
                                 'JZ': flags_in['z'],
@@ -553,13 +553,11 @@ def CPU(mem_init, clk):
                                 })
 
     src_out, dst_out, regs, src_incr = \
-        RegisterFile(pc_incr=Case(state.prev, {STATES['FETCH']: Signal(True),
-                                               STATES['SRC_IDX']: Signal(True),
-                                               STATES['DST_IDX']: Signal(True)}),
+        RegisterFile(pc_incr=TrueInCase(state.prev, ('FETCH', 'SRC_IDX', 'DST_IDX')),
                      src_reg=src_reg,
-                     dst_reg=Case(state.prev, {(STATES['PUSH'], STATES['CALL1']): Vector(1, 4),
-                                               STATES['CALL2']: Vector(0, 4)}, dst_reg),
-                     src_incr=Case(state.prev, {STATES['SRC_INCR']: Signal(True)}),
+                     dst_reg=Case(state.prev, {('PUSH', 'CALL1'): Vector(1, 4),
+                                               'CALL2': Vector(0, 4)}, dst_reg),
+                     src_incr=TrueInCase(state.prev, ('SRC_INCR',)),
                      src_mode=a_s,
                      dst_in=Case(inst_bw,
                                  {BYTE_WORD['BYTE']: Vector(dst_in[:8]).extendTo(16),
@@ -573,17 +571,17 @@ def CPU(mem_init, clk):
     sp_reg.connect(regs[1] + Vector(-2))
     sr_reg.connect(regs[2])
 
-    idx_addr.ccase(state.prev, {STATES['SRC_IDX']: src_out + mem_out,
-                                STATES['DST_IDX']: dst_out + mem_out,
-                                STATES['SRC_INCR']: src_incr,
-                                STATES['SRC_INDIRECT']: src_out})
+    idx_addr.ccase(state.prev, {'SRC_IDX': src_out + mem_out,
+                                'DST_IDX': dst_out + mem_out,
+                                'SRC_INCR': src_incr,
+                                'SRC_INDIRECT': src_out})
 
-    src.ccase(state.prev, {STATES['FETCH']: Case(inst_type, {I_TYPES['IT_JUMP']:
+    src.ccase(state.prev, {'FETCH': Case(inst_type, {I_TYPES['IT_JUMP']:
                                                                  offset.extendBy(1, LSB=True).extendTo(16,
                                                                                                        signed=True)},
-                                                 src_out),
-                           (STATES['SRC_INDIRECT'], STATES['SRC_INCR'], STATES['SRC_GET']): mem_out})
-    dst.ccase(state.prev, {STATES['FETCH']: dst_out,
+                                         src_out),
+                           ('SRC_INDIRECT', 'SRC_INCR', 'SRC_GET'): mem_out})
+    dst.ccase(state.prev, {'FETCH': dst_out,
                            STATES['DST_GET']:
                                Case(inst_bw,
                                     {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(mem_out[8:]).concat(mem_out[:8]),
@@ -637,8 +635,7 @@ def CPU(mem_init, clk):
                                                                                     'CALL1']},
                                                                                STATES['FETCH']),
                                                                       SRC_M['M_INCR']: STATES['SRC_INCR'],
-                                                                      SRC_M['M_INDIRECT']: STATES[
-                                                                          'SRC_INDIRECT'],
+                                                                      SRC_M['M_INDIRECT']: STATES['SRC_INDIRECT'],
                                                                       SRC_M['M_INDEX']: STATES['SRC_IDX']}),
                                                        'IT_JUMP': STATES['FETCH']}),
                              ('SRC_INCR', 'SRC_INDIRECT', 'SRC_GET'):

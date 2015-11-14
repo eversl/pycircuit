@@ -10,7 +10,7 @@ from MSP430 import CPU, CodeSequence, N, R, B
 from PyCircuit import TestSignal, FullAdder, SRLatch, DLatch, DFlipFlop, \
     intToSignals, signalsToInt, RippleCarryAdder, Vector, Multiplier, \
     Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder, \
-    TestVector, Signal, DecimalAdder, simplify
+    TestVector, Signal, DecimalAdder, simplify, Case, DontCare
 
 
 class Test(unittest.TestCase):
@@ -286,6 +286,16 @@ class Test(unittest.TestCase):
             print 'KoggeStoneAdder:', bitlen, ':', n_ad
             self.assertLess(m_ad[0], n_ad[0])
             self.assertGreaterEqual(m_ad[1], n_ad[1])
+
+    def test_DontCare(self):
+        v = TestVector(0, 4)
+        res = Case(v, {(Vector(1, 4), Vector(6, 4), Vector(8, 4)): Vector(13),
+                       (Vector(0, 4), Vector(3, 4), Vector(5, 4)): Vector(100)})
+        self.assertEqual(int(res), 100)
+        v[:] = 1
+        self.assertEqual(int(res), 13)
+        v[:] = 2
+        self.assert_(all(el.value is DontCare for el in res.ls))
 
 
     def test_MSP430RegisterFile(self):

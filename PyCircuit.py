@@ -119,7 +119,12 @@ class Signal(object):
         simulate([self])
 
     def eval(self):
-        value = self.func(*(arg.value for arg in self.args))
+        try:
+            value = self.func(*(arg.value for arg in self.args))
+        except TypeError:
+            valueTrue = self.func(*(True if arg.value is DontCare else arg.value for arg in self.args))
+            valueFalse = self.func(*(False if arg.value is DontCare else arg.value for arg in self.args))
+            value = valueTrue if valueTrue == valueFalse else DontCare
         if self.value == value:
             return []
         else:
@@ -346,6 +351,38 @@ class FeedbackVector(Vector):
             my_sig.connect(other_sig)
 
 
+class DontCareType(object):
+    def __repr__(self):
+        return "DontCare"
+
+    pass
+
+
+DontCare = DontCareType()
+
+
+class DontCareSignal(Signal):
+    def __init__(self):
+        super(DontCareSignal, self).__init__()
+        self.value = DontCare
+
+    def __repr__(self):
+        return '{0}()'.format(type(self).__name__)
+
+    def eval(self):
+        raise NotImplementedError
+
+
+DontCareSig = DontCareSignal()
+
+
+class DontCareVector(Vector):
+    def __init__(self, bits=16):
+        self.ls = [DontCareSig] * bits
+
+    def __repr__(self):
+        return "DontCareVector({0})".format(len(self.ls))
+
 class GuardedEval():
     def __init__(self, sig, name, vect):
         self.sig = sig
@@ -542,12 +579,14 @@ def getDefault(val1, *vals):
                 raise TypeError("Expected a %s but got a %s" % (Vector, type(val)))
             if not len(val) == len(val1):
                 raise ValueError("Vectors are not of same size, {0} vs {1}".format(val, val1))
-        return Vector(0, len(val1))
+        return DontCareVector(len(val1))
+        # return Vector(0, len(val1))
     elif isinstance(val1, Signal):
         for val in vals:
             if not isinstance(val, Signal):
                 raise TypeError("Expected a %s but got a %s" % (Signal, type(val)))
-        return Signal()
+        return DontCareSig
+        # return Signal()
     elif isinstance(val1, dict):
         typ = type(val1)
         for val in vals:
@@ -598,7 +637,7 @@ def TrueInCase(state, cases):
             new_cases[k] = cases[k]
         except TypeError as e:
             new_cases[k] = Signal(True)
-    return Case(state, new_cases, default=Signal())
+    return Case(state, new_cases, default=Signal(False))
 
 
 def HalfAdder(a, b):
@@ -631,11 +670,8 @@ def KoggeStoneAdder(als, bls, c=Signal()):
         p = prop[step / 2]
         g = gen[step / 2]
 
-        p_prev = p[:-step].extendTo(len(p),
-                                    LSB=True)  # Vector(p[i - step] if i - step >= 0 else Signal(0) for i in xrange(len(p)))
-        g_prev = g[:-step].extendTo(len(g), LSB=True,
-                                    signal=c)  # Vector(g[i - step] if i - step >= 0 else c for i in xrange(len(p)))
-        # g_prev = Vector(g[i - step] if i - step >= 0 else c for i in xrange(len(g)))
+        p_prev = p[:-step].extendTo(len(p), LSB=True)
+        g_prev = g[:-step].extendTo(len(g), LSB=True, signal=c)
         prop[step] = p & p_prev
         gen[step] = (p & g_prev) | g
         step *= 2
