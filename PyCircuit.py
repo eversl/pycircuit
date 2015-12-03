@@ -5,6 +5,7 @@ Created on Feb 4, 2014
 '''
 import inspect
 from collections import Counter
+from operator import __and__, __xor__, __or__, __invert__
 
 sim_steps = 0
 
@@ -76,11 +77,14 @@ def simplify(*args):
     return tuple(new_args)
 
 
+current_cache = {}
+
 class Signal(object):
     def __init__(self, initval=False):
         self.args = []
         self.value = initval.value if isinstance(initval, Signal) else bool(initval)
         self.fanout = []
+        self.vec = None
 
     def simplify(self):
         return self
@@ -93,7 +97,7 @@ class Signal(object):
 
     def __and__(self, other):
         if isinstance(other, Vector):
-            return Vector(And(self, o) for o in other)
+            return Vector.op(__and__, self * len(other), other)
         else:
             return And(self, other)
 
@@ -101,7 +105,19 @@ class Signal(object):
         return Not(self)
 
     def __mul__(self, other):
-        return Vector([self] * other)
+        def current_func(num):
+            def inner(sigv):
+                res = (1 << num) - 1 if sigv else 0
+                return res
+
+            return inner
+
+        if other == 1:
+            return self
+        res = Vector([self] * other)
+        res.args = [self]
+        res.func = current_func(other)
+        return res
 
     def __repr__(self):
         return '{0}({1}) [#{2:X}]'.format(type(self).__name__, self.value, id(self))
@@ -111,6 +127,9 @@ class Signal(object):
 
     def __iter__(self):
         return iter([self])
+
+    def concat(self, *others):
+        return Vector(self).concat(*others)
 
     def func(self, *args):
         raise NotImplementedError()
@@ -122,9 +141,9 @@ class Signal(object):
         try:
             value = self.func(*(arg.value for arg in self.args))
         except TypeError:
-            valueTrue = self.func(*(True if arg.value is DontCare else arg.value for arg in self.args))
-            valueFalse = self.func(*(False if arg.value is DontCare else arg.value for arg in self.args))
-            value = valueTrue if valueTrue == valueFalse else DontCare
+            valueTrue = self.func(*(True if type(arg.value) is DontCare else arg.value for arg in self.args))
+            valueFalse = self.func(*(False if type(arg.value) is DontCare else arg.value for arg in self.args))
+            value = valueTrue if valueTrue == valueFalse else DontCare()
         if self.value == value:
             return []
         else:
@@ -145,10 +164,13 @@ class TestSignal(Signal):
     def func(self):
         return self.set_value
 
+
+class ClockSignal(TestSignal):
     def cycle(self, n=1, CPU_state=None):
         for _ in xrange(n):
             self.set()
             self.reset()
+            current_cache.clear()
             if CPU_state is not None:
                 print "==============================="
                 for k in CPU_state:
@@ -166,29 +188,51 @@ class FeedbackSignal(Signal):
     def func(val):
         return val
 
-
 class Vector(object):
     def __init__(self, value, bits=16, enum=None):
+        self.func = None
         self.enum = enum
         try:
             value = (s for s in value)
         except TypeError:
-            self.ls = [value] if isinstance(value, Signal) else intToSignals(int(value), bits)
+            if isinstance(value, Signal):
+                self.ls = [value]
+            else:
+                self.const = int(value) & (1 << bits) - 1
+                self.ls = intToSignals(self.const, bits)
+
         else:
             self.ls = [s if isinstance(s, Signal) else Signal(s) for s in value]
+        for s in self.ls:
+            s.vec = self
 
     def __repr__(self):
         if self.enum:
             return 'Vector(%s)' % (tuple(k for k in self.enum if self.enum[k] == self))
         else:
-            return 'Vector({0}, {1})'.format(int(self), len(self))
+            try:
+                val = signalsToInt(self.ls)
+            except TypeError:
+                val = DontCare()
+            return 'Vector({0}, {1})'.format(val, len(self))
 
     def __len__(self):
         return len(self.ls)
 
     def __getitem__(self, key):
+        def current_func(start, stop):
+            def inner(val):
+                return val >> start & ((1 << (stop - start)) - 1)
+
+            return inner
         if isinstance(key, slice):
-            return Vector(self.ls[key])
+            res = Vector(self.ls[key])
+            assert (key.step is None)
+            res.args = [self]
+            res.func = current_func(
+                0 if key.start is None else len(self.ls) + key.start if key.start < 0 else key.start,
+                len(self.ls) if key.stop is None else len(self.ls) + key.stop if key.stop < 0 else key.stop)
+            return res
         else:
             return self.ls[key]
 
@@ -199,7 +243,7 @@ class Vector(object):
         return KoggeStoneAdder(self, other)[0]
 
     def __sub__(self, other):
-        return KoggeStoneAdder(self, -other)[0]
+        return KoggeStoneAdder(self, ~other, Signal(1))[0]
 
     def __mul__(self, other):
         return Vector(Multiplier(self, other))
@@ -221,15 +265,15 @@ class Vector(object):
 
     def __and__(self, other):
         if isinstance(other, Signal):
-            return Vector(s & other for s in self)
+            return Vector.op(__and__, self, other * len(self))
         else:
-            return Vector(s & o for s, o in zip_all(self, other))
+            return Vector.op(__and__, self, other)
 
     def __xor__(self, other):
-        return Vector(s ^ o for s, o in zip_all(self, other))
+        return Vector.op(__xor__, self, other)
 
     def __or__(self, other):
-        return Vector(s | o for s, o in zip_all(self, other))
+        return Vector.op(__or__, self, other)
 
     def __neg__(self):
         inv = ~self
@@ -242,7 +286,7 @@ class Vector(object):
         return Vector(If(self[-1], -self, +self))
 
     def __invert__(self):
-        return Vector(~a for a in self)
+        return Vector.op(__invert__, self)
 
     def __int__(self):
         return signalsToInt(self.ls)
@@ -281,29 +325,68 @@ class Vector(object):
         self.ls += other.ls if isinstance(other, Vector) else [other] if isinstance(other, Signal) else other[:]
 
     def concat(self, *others):
+        def current_func(*vecs):
+            sizes = [len(v.ls) if isinstance(v, Vector) else 1 for v in vecs]
+
+            def inner(*vals):
+                res = 0
+                for i, val in enumerate(vals):
+                    res |= val << sum(sizes[:i])
+                return res
+
+            return inner
         lss = [o.ls if isinstance(o, Vector) else [o] if isinstance(o, Signal) else o[:] for o in others]
-        return Vector(self.ls + sum(lss, []))
+        res = Vector(self.ls + sum(lss, []))
+        res.args = [self] + list(others)
+        res.func = current_func(self, *others)
+        return res
 
     def extendBy(self, l, LSB=False, signed=False, signal=Signal(0)):
         if signed:
             signal = self.ls[-1]
         if LSB:
-            res = Vector([signal] * l)
-            res.append(self)
-            return res
+            return (signal * l).concat(self)
         else:
-            return self.concat([signal] * l)
+            return self.concat(signal * l)
 
     def extendTo(self, l, LSB=False, signed=False, signal=Signal(0)):
         return self.extendBy(l - len(self), LSB, signed, signal)
 
     def current(self):
-        vals = [s.current() for s in self.ls]
-        return vals
+        if id(self) in current_cache:
+            return current_cache[id(self)]
+        try:
+            return self.const
+        except AttributeError:
+            if self.func:
+                args = [a.current() for a in self.args]
+                try:
+                    val = self.func(*args)
+                except TypeError as e:
+                    valTrue = self.func(*[a.val | a.mask if type(a) is DontCare else a for a in args])
+                    valFalse = self.func(*[a.val & ~a.mask if type(a) is DontCare else a for a in args])
+                    val = valTrue if valTrue == valFalse else DontCare(valTrue ^ valFalse, not valTrue ^ valFalse)
+                    val = val & ((1 << len(self)) - 1)
+
+            else:
+                vals = [s.current() for s in self.ls]
+                try:
+                    val = sum((int(v) << i) for i, v in enumerate(vals))
+                except TypeError:
+                    mask = sum(1 << i for i, v in enumerate(vals) if type(v) is DontCare)
+                    v = sum(1 << i for i, v in enumerate(vals) if type(v) is not DontCare and v)
+                    val = DontCare(v, mask)
+        current_cache[id(self)] = val
+        # if val & ((1 << len(self.ls)) - 1) != signalsToInt(self.ls, False):
+        #     print self, "current result", val, "not equal to", signalsToInt(self.ls, False)
+        return val
 
     @classmethod
     def op(cls, fn, *args):
-        return Vector(fn(*a) for a in zip_all(*args))
+        res = Vector(fn(*a) for a in zip_all(*args))
+        res.func = fn
+        res.args = args
+        return res
 
 
 class TestVector(Vector):
@@ -325,6 +408,7 @@ class TestVector(Vector):
             bits = value
         for b, s in zip(bits, signals):
             s.set_value = b.value if isinstance(b, Signal) else b
+        self.const = value
         simulate(signals)
 
 
@@ -351,26 +435,27 @@ class FeedbackVector(Vector):
             my_sig.connect(other_sig)
 
 
-class DontCareType(object):
+class DontCare(object):
+    def __init__(self, val=0, mask=-1):
+        self.val = val
+        self.mask = mask
+
+    def __eq__(self, other):
+        return type(self) == type(other)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
     def __repr__(self):
         return "DontCare"
-
-    pass
-
-
-DontCare = DontCareType()
-
 
 class DontCareSignal(Signal):
     def __init__(self):
         super(DontCareSignal, self).__init__()
-        self.value = DontCare
+        self.value = DontCare()
 
     def __repr__(self):
         return '{0}()'.format(type(self).__name__)
-
-    def eval(self):
-        raise NotImplementedError
 
 
 DontCareSig = DontCareSignal()
@@ -379,6 +464,7 @@ DontCareSig = DontCareSignal()
 class DontCareVector(Vector):
     def __init__(self, bits=16):
         self.ls = [DontCareSig] * bits
+        self.func = None
 
     def __repr__(self):
         return "DontCareVector({0})".format(len(self.ls))
@@ -432,11 +518,14 @@ def intToSignals(num, bits):
 
 
 def signalsToInt(ls, signed=True):
-    num = 0
-    for i in xrange(len(ls)):
-        num |= (1 << i if ls[i].value else 0)
-    if signed and len(ls) > 0 and ls[-1].value:
-        num -= (1 << len(ls))
+    try:
+        num = sum(int(v.value) << i for i, v in enumerate(ls))
+        if signed and len(ls) > 0 and ls[-1].value:
+            num -= (1 << len(ls))
+    except TypeError:
+        mask = sum(1 << i for i, v in enumerate(ls) if type(v) is DontCareSignal)
+        num = sum(1 << i for i, v in enumerate(ls) if type(v) is not DontCareSignal and v.value)
+        return DontCare(num, mask)
     return num
 
 
@@ -509,7 +598,31 @@ class CircuitOper(Signal):
         return res
 
     def current(self):
-        return self.func(*(a.current() for a in self.args))
+        if id(self) in current_cache:
+            return current_cache[id(self)]
+
+        try:
+            args = []
+            for arg in self.args:
+                if arg.vec and arg.vec.func:
+                    try:
+                        mask = 1 << arg.vec.ls.index(arg)
+                        val = arg.vec.current()
+                        args.append(bool(val & mask))
+                    except TypeError:
+                        args.append(arg.current())
+                else:
+                    args.append(arg.current())
+            val = self.func(*args)
+        except TypeError:
+            valTrue = self.func(*[True if a is DontCare else a for a in args])
+            valFalse = self.func(*[False if a is DontCare else a for a in args])
+            val = valTrue if valTrue == valFalse else DontCare
+
+        if val != self.value:
+            print self, "current result", val, "not equal to", self.value
+        current_cache[id(self)] = val
+        return val
 
 
 class And(CircuitOper):
@@ -637,6 +750,14 @@ def TrueInCase(state, cases):
             new_cases[k] = cases[k]
         except TypeError as e:
             new_cases[k] = Signal(True)
+    first = new_cases.keys()[0]
+    if isinstance(first, Vector) and first.enum != None:
+        allcases = set(first.enum[k] for k in first.enum)
+        notcases = allcases - set(new_cases.keys())
+        for k in notcases:
+            new_cases[k] = Signal(False)
+        return Case(state, new_cases)
+
     return Case(state, new_cases, default=Signal(False))
 
 
@@ -662,8 +783,8 @@ def RippleCarryAdder(als, bls, c=Signal()):
 
 
 def KoggeStoneAdder(als, bls, c=Signal()):
-    prop = {0: Vector.op(lambda a, b: a ^ b, als, bls)}
-    gen = {0: Vector.op(lambda a, b: a & b, als, bls)}
+    prop = {0: als ^ bls}
+    gen = {0: als & bls}
 
     step = 1
     while step < len(als):
@@ -692,7 +813,7 @@ def DecimalAdder(src, dst_in, c_in):
         c_in = ~adjusted[-1]
         dst_out.append(If(c_in, adjusted[:-1], sum_n[:-1]))
 
-    return Vector(dd for d in dst_out for dd in d), c_in
+    return Vector(0, 0).concat(*dst_out), c_in
 
 
 
@@ -720,7 +841,8 @@ def If(pred, cons, alt):
     if isinstance(pred, Vector):
         pred = Or(*pred[:])
     npred = Not(pred)
-    return Vector((pred & c) | (npred & a) for c, a in zip_all(cons, alt))
+    res = (pred & cons) | (npred & alt)
+    return res
 
 
 def SRLatch(s, r, init=False):
@@ -744,13 +866,23 @@ def DFlipFlop(d, clk):
     return slave
 
 
-def Decoder(a):
-    if len(a) <= 1:
-        return Vector([~a[-1], a[-1]])
+def Decoder(arg):
+    def current_func():
+        def inner(val):
+            return 1 << val
+
+        return inner
+
+    a = arg[-1]
+    not_a = ~a
+    if len(arg) <= 1:
+        res = not_a.concat(a)
     else:
-        sub = Decoder(a[:-1])
-        not_a = ~a[-1]
-        return Vector(not_a & d for d in sub).concat(sub & a[-1])
+        sub = Decoder(arg[:-1])
+        res = (sub & not_a).concat(sub & a)
+    res.args = [arg]
+    res.func = current_func()
+    return res
 
 
 def GuardedMemory(mem_addr, data, isWrite, init=None):
@@ -781,6 +913,12 @@ def Memory(mem_addr, data, isWrite, init=None):
 def Multiplexer(sel, alts):
     enables = Decoder(sel)
 
+    def current_func(alts):
+        def inner(sel):
+            return alts[sel].current()
+
+        return inner
+
     def combiner(alts):
         alts = list(alts)
         alt0 = alts[0]
@@ -788,7 +926,7 @@ def Multiplexer(sel, alts):
             for alt in alts[1:]:
                 if not isinstance(alt, Signal):
                     raise TypeError()
-            return Or(*Vector(l & en for (l, en) in zip_all(alts, enables)))
+            return Or(*(Vector(alts) & enables))
         elif isinstance(alt0, dict):
             typ = type(alt0)
             keys = set(alt0.keys())
@@ -806,7 +944,10 @@ def Multiplexer(sel, alts):
                     raise TypeError()
                 if len(alt) is not ln:
                     raise ValueError()
-            return Vector(combiner(a[i] for a in alts) for i in xrange(ln))
+            res = Vector(combiner(a[i] for a in alts) for i in xrange(ln))
+            res.args = [sel]
+            res.func = current_func(alts)
+            return res
         else:
             typ = type(alt0)
             ln = len(alt0)

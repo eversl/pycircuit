@@ -10,7 +10,7 @@ from MSP430 import CPU, CodeSequence, N, R, B
 from PyCircuit import TestSignal, FullAdder, SRLatch, DLatch, DFlipFlop, \
     intToSignals, signalsToInt, RippleCarryAdder, Vector, Multiplier, \
     Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder, \
-    TestVector, Signal, DecimalAdder, simplify, Case, DontCare
+    TestVector, Signal, DecimalAdder, simplify, Case, DontCare, current_cache, ClockSignal
 
 
 class Test(unittest.TestCase):
@@ -123,32 +123,24 @@ class Test(unittest.TestCase):
                     als = Vector(a, 16)
                     bls = Vector(b, 16)
                     sls, c_out = KoggeStoneAdder(als, bls, Signal(c))
+                    self.assertCurrent(sls)
                     sum = signalsToInt(sls, True)
                     self.assertEqual(sum, a + b + c)
                     self.assertEqual(c_out.value, a < 0)
 
-    def test_Current(self):
-        for a in xrange(-256, 255, 67):
-            for b in xrange(-22756, 32767, 1453):
-                for c in xrange(2):
-                    als = Vector(a, 16)
-                    bls = Vector(b, 16)
-                    sls, c_out = KoggeStoneAdder(als, bls, Signal(c))
-
-                    print sls.current()
-
-                    sum = signalsToInt(sls, True)
-                    self.assertEqual(sum, a + b + c)
-                    self.assertEqual(c_out.value, a < 0)
-
+    def assertCurrent(self, sls):
+        current_cache.clear()
+        self.assertTrue(sls.current() == signalsToInt(sls.ls, False) or
+                        (sls.current() & ((1 << len(sls)) - 1)) == signalsToInt(sls.ls, False))
 
     def test_DecimalAdder(self):
         for a in xrange(0, 10000, 907):
-            d_a = Vector(dd for d in reversed("%04u" % a) for dd in Vector(int(d), 4))
+            d_a = Vector(0, 0).concat(*[Vector(int(d), 4) for d in reversed("%04u" % a)])
             for b in xrange(0, 10000, 359):
-                d_b = Vector(dd for d in reversed("%04u" % b) for dd in Vector(int(d), 4))
+                d_b = Vector(0, 0).concat(*[Vector(int(d), 4) for d in reversed("%04u" % b)])
                 for c in xrange(2):
                     sls, c_out = DecimalAdder(d_a, d_b, Signal(c))
+                    self.assertCurrent(sls)
                     d_sum = sls.concat(c_out)
                     sum = int(
                         ''.join(reversed([str(signalsToInt(d_sum[i:i + 4], False)) for i in xrange(0, len(d_sum), 4)])))
@@ -295,11 +287,12 @@ class Test(unittest.TestCase):
         v[:] = 1
         self.assertEqual(int(res), 13)
         v[:] = 2
-        self.assert_(all(el.value is DontCare for el in res.ls))
+        self.assert_(all(type(el.value) is DontCare for el in res.ls))
+        self.assertCurrent(res)
 
 
     def test_MSP430RegisterFile(self):
-        clk = TestSignal()
+        clk = ClockSignal()
         src_reg = TestVector(0, 4)
         dst_reg = TestVector(0, 4)
         src_incr = TestSignal()
@@ -319,46 +312,48 @@ class Test(unittest.TestCase):
             if r == 3: continue  # register 3 is only constant generator
             dst_reg[:] = r
             dst_in[:] = r * r * (r + 1)
-            clk.set()
-            clk.reset()
+            clk.cycle()
             # print 'src_out', src_out
+            self.assertCurrent(src_out)
             self.assertEqual(int(src_out), 0)
             # print 'dst_out', dst_out
+            self.assertCurrent(dst_out)
             self.assertEqual(int(dst_out), r * r * (r + 1))
 
         for r, reg in enumerate(regs):
             if r not in [2, 3]:
                 # print 'reg', r, reg
+                self.assertCurrent(reg)
                 self.assertEqual(int(reg), r * r * (r + 1))
 
         for r in xrange(16):
             sr_in[:] = r
-            clk.set()
-            clk.reset()
+            clk.cycle()
             # print 'sr', r, regs[2]
+            self.assertCurrent(regs[2])
             self.assertEqual(int(regs[2]), r)
 
         sr_in[:] = 3
         dst_reg[:] = 2
         dst_in[:] = 5
-        clk.set()
-        clk.reset()
+        clk.cycle()
         print 'sr', r, regs[2]
+        self.assertCurrent(regs[2])
         self.assertEqual(int(regs[2]), 5)
 
         dst_wr.set(False)
         sr_in[:] = 4
         dst_in[:] = 6
-        clk.set()
-        clk.reset()
+        clk.cycle()
         # print 'sr', r, regs[2]
+        self.assertCurrent(regs[2])
         self.assertEqual(int(regs[2]), 5)
 
         pc_incr.set(True)
         for r in xrange(16):
-            clk.set()
-            clk.reset()
+            clk.cycle()
             # print 'pc', regs[0]
+            self.assertCurrent(regs[0])
             self.assertEqual(int(regs[0]), r * 2 + 2)
 
     def test_CPU_init(self):
@@ -372,7 +367,7 @@ class Test(unittest.TestCase):
             self.assertEquals(reg, Vector(0, 16))
 
     def test_MOV(self):
-        clk = TestSignal()
+        clk = ClockSignal()
         cs = CodeSequence()
         s1, d1 = cs.MOV(N(2 ** 10), R(4))
         s2, d2 = cs.MOV(N(2 ** 10 + 2 ** 6), R(4), B)
@@ -400,19 +395,32 @@ class Test(unittest.TestCase):
 
     def two_arg_alu(self, instr, op, test_seq):
         # first test just the ALU
-        flags = {f: Signal() for f in MSP430.FLAGS}
+        flags = {f: TestSignal() for f in MSP430.FLAGS}
+        als = TestVector(0)
+        bls = TestVector(0)
+        res, flags_out = MSP430.alu(MSP430.INSTRS[instr], bls, als, flags, MSP430.BYTE_WORD['WORD'])
         for a, b, fl, flb in test_seq:
-            res, flags = MSP430.alu(MSP430.INSTRS[instr], Vector(b), Vector(a), flags, MSP430.BYTE_WORD['WORD'])
+            als[:] = a
+            bls[:] = b
+            self.assertCurrent(res)
             self.assertEquals(res, Vector(op(a, b)))
-            self.assertEquals(set(f for f in flags if flags[f].value), set(fl))
-        flags = {f: Signal() for f in MSP430.FLAGS}
+            self.assertEquals(set(f for f in flags_out if flags_out[f].value), set(fl))
+            for f in MSP430.FLAGS:
+                flags[f].set(flags_out[f])
+
+        als = TestVector(0, 8)
+        bls = TestVector(0, 8)
+        res, flags_out = MSP430.alu(MSP430.INSTRS[instr], bls, als, flags, MSP430.BYTE_WORD['BYTE'])
         for a, b, fl, flb in test_seq:
-            res, flags = MSP430.alu(MSP430.INSTRS[instr], Vector(b, 8), Vector(a, 8), flags, MSP430.BYTE_WORD['BYTE'])
+            als[:] = a
+            bls[:] = b
             self.assertEquals(res, Vector(op(a, b), 8))
-            self.assertEquals(set(f for f in flags if flags[f].value), set(flb))
+            self.assertEquals(set(f for f in flags_out if flags_out[f].value), set(flb))
+            for f in MSP430.FLAGS:
+                flags[f].set(flags_out[f])
 
         # then test executing instructions on the alu
-        clk = TestSignal()
+        clk = ClockSignal()
         cs = CodeSequence()
         cycles = []
         for a, b, fl, flb in test_seq:
@@ -497,7 +505,7 @@ class Test(unittest.TestCase):
 
 
     def one_arg_alu(self, instr, op, test_seq):
-        clk = TestSignal()
+        clk = ClockSignal()
         cs = CodeSequence()
         cycles = []
         for a, fl, flb in test_seq:
@@ -551,7 +559,7 @@ class Test(unittest.TestCase):
         self.one_arg_alu('RRC', lambda a, c, l: (a >> 1) | c << (l - 1), test_seq)
 
     def test_OneArgInstr(self):
-        clk = TestSignal()
+        clk = ClockSignal()
         cs = CodeSequence()
         v = -32768
         s1, d1 = cs.RRA(N(v))
@@ -580,7 +588,7 @@ class Test(unittest.TestCase):
         self.assertEquals(debuglines['regs'][7], Vector(v / 16, 16))
 
     def test_PUSH(self):
-        clk = TestSignal()
+        clk = ClockSignal()
         cs = CodeSequence()
         s0, d0 = cs.MOV(N(0xFFFF), R(1))
         s1, d1 = cs.PUSH(R(1))
@@ -607,7 +615,7 @@ class Test(unittest.TestCase):
 
 
     def test_BRANCH(self):
-        clk = TestSignal()
+        clk = ClockSignal()
         cs = CodeSequence()
         s0, d0 = cs.MOV(N(0xFFFF), R(10))
         s1, d1 = cs.BRANCH(R(4))
@@ -619,7 +627,7 @@ class Test(unittest.TestCase):
             self.assertEquals(debuglines['regs'][0], Vector(0, 16))
 
     def test_JMP(self):
-        clk = TestSignal()
+        clk = ClockSignal()
         cs = CodeSequence()
         l1 = cs.label()
         s0, d0 = cs.MOV(N(0xFFFF), R(10))
@@ -632,7 +640,7 @@ class Test(unittest.TestCase):
             self.assertEquals(debuglines['regs'][0], Vector(0, 16))
 
     def test_JZ(self):
-        clk = TestSignal()
+        clk = ClockSignal()
         cs = CodeSequence()
         l1 = cs.label()
         s0, d0 = cs.CLRZ()
@@ -649,7 +657,7 @@ class Test(unittest.TestCase):
             self.assertEquals(debuglines['regs'][0], Vector(0, 16))
 
     def test_JN(self):
-        clk = TestSignal()
+        clk = ClockSignal()
         cs = CodeSequence()
         l1 = cs.label()
         s0, d0 = cs.CLRN()
@@ -666,7 +674,7 @@ class Test(unittest.TestCase):
             self.assertEquals(debuglines['regs'][0], Vector(0, 16))
 
     def test_JC(self):
-        clk = TestSignal()
+        clk = ClockSignal()
         cs = CodeSequence()
         l1 = cs.label()
         s0, d0 = cs.CLRC()
@@ -684,7 +692,7 @@ class Test(unittest.TestCase):
 
 
     def test_CALL(self):
-        clk = TestSignal()
+        clk = ClockSignal()
         cs = CodeSequence()
         s0, d0 = cs.MOV(N(0xFFFF), R(1))
         s1, d1 = cs.MOV(~R(1), R(4))
@@ -700,10 +708,6 @@ class Test(unittest.TestCase):
         self.assertEquals(debuglines['regs'][1], Vector(-4, 16))
         clk.cycle(d1)
         self.assertEquals(debuglines['regs'][4], Vector((s0 + s1 + s2) * 2, 16))
-
-    def test_alu(self):
-        res = MSP430.alu(MSP430.INSTRS['SUB'], Vector(191), Vector(209), {'c': Signal()}, MSP430.BYTE_WORD['WORD'])
-        print res
 
 if __name__ == "__main__":
     # import sys;sys.argv = ['', 'Test.testName']
