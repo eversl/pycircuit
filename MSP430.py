@@ -3,7 +3,7 @@ Created on Mar 21, 2014
 
 @author: leonevers
 '''
-from PyCircuit import Vector, Signal, Memory, Decoder, FeedbackVector, If, zip_all, Or, calcAreaDelay, \
+from PyCircuit import Vector, Memory, Decoder, FeedbackVector, If, zip_all, Or, calcAreaDelay, \
     Enum, Case, EnumVector, KoggeStoneAdder, And, DecimalAdder, TrueInCase, Register
 
 
@@ -11,18 +11,16 @@ def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, d
     dst_lines = Decoder(dst_reg)
     src_lines = Decoder(src_reg)
 
-    dst_wr_lines = Register(clk, 0, len(dst_lines))
-    dst_wr_lines.connect(dst_wr & dst_lines)
+    dst_wr_lines = Register(clk, 0, len(dst_lines)).connect(dst_wr & dst_lines)
 
-    src_incr_lines = Register(clk, 0, len(src_lines))
-    src_incr_lines.connect(src_incr & src_lines)
+    src_incr_lines = Register(clk, 0, len(src_lines)).connect(src_incr & src_lines)
+
+    prev_dst_in = Register(clk, 0, 16).connect(dst_in)
 
     src_incr_val = Register(clk, 0, 16)
+
     reg_sizes = [15, 15, 16, 0] + [16] * 12
     registers = [Register(clk, 0, sz) for sz in reg_sizes]
-
-    prev_dst_in = Register(clk, 0, 16)
-    prev_dst_in.connect(dst_in)
 
     out_vals = [If(src_incr_line, src_incr_val.prev[16 - sz:],
                    If(dst_wr_line, prev_dst_in[16 - sz:], reg.prev)).extendTo(16, LSB=True)
@@ -385,10 +383,10 @@ def alu(instr, src, dst_in, flags_in, bw):
     def calc_alu(fn, *args):
         out, flags_upd = fn(*args)
         n_out = out[-1]  # negative equals sign bit
-        z_out = And(*Vector(~(a ^ b) for a, b in zip_all(Vector(out), Vector(0, len(out)))))
+        z_out = Vector(And(*Vector(~(a ^ b) for a, b in zip_all(Vector(out), Vector(0, len(out))))))
         c_out = ~z_out
-        v_out = Signal(0)
-        src[-1] & dst_in[-1]
+        v_out = Vector(0, 1)
+        # src[-1] & dst_in[-1]
         flags = {'c': c_out, 'n': n_out, 'z': z_out, 'v': v_out}
         flags.update(flags_upd)
         return out, flags
@@ -401,7 +399,7 @@ def alu(instr, src, dst_in, flags_in, bw):
                            (INSTRS['SUB'], INSTRS['SUBC'], INSTRS['CMP']): -bls})
         sls, c_out = KoggeStoneAdder(als, bls, c)
         v_out = (als[-1] ^ sls[-1]) & (bls[-1] ^ sls[-1])
-        return (Vector(sls)), {'c': c_out, 'v': v_out}
+        return (sls), {'c': c_out, 'v': v_out}
 
     def do_dadd(als, bls, c):
         sls, c_out = DecimalAdder(als, bls, c)
@@ -434,7 +432,7 @@ def alu(instr, src, dst_in, flags_in, bw):
         return out, flags_in
 
     def do_sxt(src):
-        out = src[:7].concat(Vector([src[7]] * (len(src) - 7)))
+        out = src[:7].concat(*[src[7]] * (len(src) - 7))
         return out, {}
 
     def do_jmp(src, dst_in):
@@ -449,7 +447,7 @@ def alu(instr, src, dst_in, flags_in, bw):
              INSTRS['CMP']):
                 calc_alu(do_add_sub, src, dst_in,
                          Case(instr,
-                              {(INSTRS['ADD'], INSTRS['SUB'], INSTRS['CMP']): Signal(),
+                              {(INSTRS['ADD'], INSTRS['SUB'], INSTRS['CMP']): Vector(0, 1),
                                (INSTRS['ADDC'], INSTRS['SUBC']): c_in}),
                          instr),
             INSTRS['BIC']: calc_alu(do_bic, src, dst_in),
@@ -466,13 +464,13 @@ def alu(instr, src, dst_in, flags_in, bw):
             INSTRS['SXT']: calc_alu(do_sxt, src),
             (INSTRS['JNZ'], INSTRS['JZ'], INSTRS['JNC'], INSTRS['JC'],
              INSTRS['JN'], INSTRS['JGE'], INSTRS['JL'], INSTRS['JMP']):
-                calc_alu(do_jmp, src, dst_in)}, (Vector(0, len(dst_in)), {k: Signal() for k in FLAGS}))
+                calc_alu(do_jmp, src, dst_in)}, (Vector(0, len(dst_in)), {k: Vector(0, 1) for k in FLAGS}))
         return Case(instr, {(INSTRS['CMP'], INSTRS['BIT']): dst_in}, dst_out), flags_out
 
     dst_out, flags_out = Case(bw, {
         BYTE_WORD['BYTE']: (lambda dst_out, flags_out: (dst_out[:8].concat(dst_in[8:]), flags_out))(
             *op(src[:8], dst_in[:8])),
-        BYTE_WORD['WORD']: op(src, dst_in)}, (Vector(0, len(dst_in)), {k: Signal() for k in FLAGS}))
+        BYTE_WORD['WORD']: op(src, dst_in)}, (Vector(0, len(dst_in)), {k: Vector(0, 1) for k in FLAGS}))
 
     return dst_out, flags_out
 
@@ -532,17 +530,17 @@ def CPU(mem_init, clk):
                                                                                        TrueInCase(a_d, DST_M[
                                                                                            'M_DIRECT'])})}),
                                                            I_TYPES['IT_ONE']: TrueInCase(a_s, SRC_M['M_DIRECT'])},
-                                               Signal()),
+                                               Vector(0, 1)),
                                       ('SRC_INDIRECT', 'SRC_INCR', 'SRC_GET'):
                                           TrueInCase(inst_type,
                                                      {I_TYPES['IT_TWO']: TrueInCase(a_d, DST_M['M_DIRECT'])}),
-                                      STATES["DST_GET"]: TrueInCase(inst_type, I_TYPES['IT_TWO'])}) & \
+                                      STATES["DST_GET"]: TrueInCase(inst_type, I_TYPES['IT_TWO'])}) &
               TrueInCase(inst_type, {I_TYPES['IT_TWO']: TrueInCase(a_d, DST_M['M_DIRECT']),
-                                     I_TYPES['IT_ONE']: TrueInCase(a_s, SRC_M['M_DIRECT'])}) & \
+                                     I_TYPES['IT_ONE']: TrueInCase(a_s, SRC_M['M_DIRECT'])}) &
               ~TrueInCase(instr, INSTRS['PUSH'])) | \
              TrueInCase(instr, {'PUSH': TrueInCase(state.prev, ('PUSH',)),
                                 'CALL': TrueInCase(state.prev, ('CALL1', 'CALL2')),
-                                'JMP': Signal(True),
+                                'JMP': Vector(1, 1),
                                 'JNZ': ~flags_in['z'],
                                 'JZ': flags_in['z'],
                                 'JNC': ~flags_in['c'],
@@ -577,8 +575,8 @@ def CPU(mem_init, clk):
                                 'SRC_INDIRECT': src_out})
 
     src.ccase(state.prev, {'FETCH': Case(inst_type, {I_TYPES['IT_JUMP']:
-                                                                 offset.extendBy(1, LSB=True).extendTo(16,
-                                                                                                       signed=True)},
+                                                         offset.extendBy(1, LSB=True).extendTo(16,
+                                                                                               signed=True)},
                                          src_out),
                            ('SRC_INDIRECT', 'SRC_INCR', 'SRC_GET'): mem_out})
     dst.ccase(state.prev, {'FETCH': dst_out,
@@ -595,7 +593,7 @@ def CPU(mem_init, clk):
     def flag_for_bit(n, b):
         if n in REV_FLAGS_SR_BITS:
             res = flags_out[REV_FLAGS_SR_BITS[n]]
-            return res
+            return res.ls[0]
         else:
             return b
 

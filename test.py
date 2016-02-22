@@ -10,7 +10,7 @@ from MSP430 import CPU, CodeSequence, N, R, B
 from PyCircuit import TestSignal, FullAdder, SRLatch, DLatch, DFlipFlop, \
     intToSignals, signalsToInt, RippleCarryAdder, Vector, Multiplier, \
     Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder, \
-    TestVector, Signal, DecimalAdder, simplify, Case, DontCare, current_cache, ClockSignal
+    TestVector, Signal, DecimalAdder, simplify, Case, DontCare, current_cache, ClockSignal, Register
 
 
 class Test(unittest.TestCase):
@@ -111,7 +111,7 @@ class Test(unittest.TestCase):
                     als = Vector(a, 16)
                     bls = Vector(b, 16)
                     sls, c_out = RippleCarryAdder(als, bls, Signal(c))
-                    sum = signalsToInt(sls, True)
+                    sum = int(sls)
                     self.assertEqual(sum, a + b + c)
                     self.assertEqual(c_out.value, a < 0)
 
@@ -123,15 +123,17 @@ class Test(unittest.TestCase):
                     als = Vector(a, 16)
                     bls = Vector(b, 16)
                     sls, c_out = KoggeStoneAdder(als, bls, Signal(c))
+                    if a + b + c > 0:
+                        pass
                     self.assertCurrent(sls)
-                    sum = signalsToInt(sls, True)
+                    sum = int(sls)
                     self.assertEqual(sum, a + b + c)
-                    self.assertEqual(c_out.value, a < 0)
+                    self.assertEqual(bool(c_out), a < 0)
 
-    def assertCurrent(self, sls):
+    def assertCurrent(self, vec):
         current_cache.clear()
-        self.assertTrue(sls.current() == signalsToInt(sls.ls, False) or
-                        (sls.current() & ((1 << len(sls)) - 1)) == signalsToInt(sls.ls, False))
+        self.assertTrue(vec.current() == signalsToInt(vec.ls, False) or
+                        (vec.current() & ((1 << len(vec)) - 1)) == signalsToInt(vec.ls, False))
 
     def test_DecimalAdder(self):
         for a in xrange(0, 10000, 907):
@@ -151,18 +153,18 @@ class Test(unittest.TestCase):
             for b in xrange(-22756, 32767, 1453):
                 als = Vector(a, 16)
                 bls = Vector(b, 16)
-            sls, c_out = KoggeStoneAdder(als, bls)
-            n_ad = calcAreaDelay(als.concat(bls))
-            print 'Before:', n_ad,
+                sls, c_out = KoggeStoneAdder(als, bls)
+                n_ad = calcAreaDelay(als.concat(bls))
+                print 'Before:', n_ad,
 
-            sls, c_out = simplify(sls, c_out)
+                sls, c_out = simplify(sls, c_out)
 
-            n_ad = calcAreaDelay(als.concat(bls))
-            print 'After:', n_ad
+                n_ad = calcAreaDelay(als.concat(bls))
+                print 'After:', n_ad
 
-            sum = signalsToInt(sls, True)
-            self.assertEqual(sum, a + b)
-            self.assertEqual(c_out.value, a < 0)
+                sum = signalsToInt(sls.ls, True)
+                self.assertEqual(sum, a + b)
+                self.assertEqual(c_out.ls[0].value, a < 0)
 
     def test_Simplify(self):
         for a in xrange(-256, 255, 67):
@@ -182,9 +184,9 @@ class Test(unittest.TestCase):
                 for c in xrange(2):
                     bls[:] = b
                     cs.set(c)
-                    sum = signalsToInt(sls, True)
+                    sum = int(sls)
                     self.assertEqual(sum, a + b + c)
-                    self.assertEqual(c_out.value, a < 0)
+                    self.assertEqual(bool(c_out), a < 0)
 
 
     def test_arith(self):
@@ -201,7 +203,7 @@ class Test(unittest.TestCase):
         for num in xrange(-22756, 32767, 1453):
             als = Vector(num, 16)
             sls = -als
-            neg = signalsToInt(sls, True)
+            neg = int(sls)
             self.assertEqual(neg, -num)
 
 
@@ -228,21 +230,29 @@ class Test(unittest.TestCase):
 
 
     def test_Memory(self):
-        a = TestVector(0, 9)
+        a = TestVector(0, 8)
         d = TestVector(0, 16)
-        mem_wr = TestSignal(0)
+        mem_wr = TestVector([False])
         q = Memory(a, d, mem_wr)
+        self.assertCurrent(q)
         print calcAreaDelay(a)
         print calcAreaDelay(d)
         print calcAreaDelay(mem_wr)
         for i in xrange(2 ** 8):
+            a[:] = i
+            self.assertEqual(int(q), 0)
+            self.assertCurrent(q)
+        for i in xrange(2 ** 8):
             d[:] = i
             a[:] = i
-            mem_wr.set()
-            mem_wr.reset()
+            mem_wr[:] = 1
+            self.assertCurrent(q)
+            mem_wr[:] = 0
+            self.assertCurrent(q)
         for i in xrange(2 ** 8):
             a[:] = i
             self.assertEqual(int(q), i)
+            self.assertCurrent(q)
 
     def test_RegisterFile(self):
         addr1 = TestVector(0, 3)
@@ -357,7 +367,7 @@ class Test(unittest.TestCase):
             self.assertEqual(int(regs[0]), r * 2 + 2)
 
     def test_CPU_init(self):
-        clk = TestSignal()
+        clk = ClockSignal()
         cs = CodeSequence()
 
         debuglines = CPU(cs.code, clk)
@@ -395,7 +405,7 @@ class Test(unittest.TestCase):
 
     def two_arg_alu(self, instr, op, test_seq):
         # first test just the ALU
-        flags = {f: TestSignal() for f in MSP430.FLAGS}
+        flags = {f: TestVector(0, 1) for f in MSP430.FLAGS}
         als = TestVector(0)
         bls = TestVector(0)
         res, flags_out = MSP430.alu(MSP430.INSTRS[instr], bls, als, flags, MSP430.BYTE_WORD['WORD'])
@@ -404,9 +414,9 @@ class Test(unittest.TestCase):
             bls[:] = b
             self.assertCurrent(res)
             self.assertEquals(res, Vector(op(a, b)))
-            self.assertEquals(set(f for f in flags_out if flags_out[f].value), set(fl))
+            self.assertEquals(set(f for f in flags_out if flags_out[f]), set(fl))
             for f in MSP430.FLAGS:
-                flags[f].set(flags_out[f])
+                flags[f][:] = int(flags_out[f])
 
         als = TestVector(0, 8)
         bls = TestVector(0, 8)
@@ -414,10 +424,11 @@ class Test(unittest.TestCase):
         for a, b, fl, flb in test_seq:
             als[:] = a
             bls[:] = b
+            self.assertCurrent(res)
             self.assertEquals(res, Vector(op(a, b), 8))
-            self.assertEquals(set(f for f in flags_out if flags_out[f].value), set(flb))
+            self.assertEquals(set(f for f in flags_out if flags_out[f]), set(flb))
             for f in MSP430.FLAGS:
-                flags[f].set(flags_out[f])
+                flags[f][:] = int(flags_out[f])
 
         # then test executing instructions on the alu
         clk = ClockSignal()
@@ -708,6 +719,18 @@ class Test(unittest.TestCase):
         self.assertEquals(debuglines['regs'][1], Vector(-4, 16))
         clk.cycle(d1)
         self.assertEquals(debuglines['regs'][4], Vector((s0 + s1 + s2) * 2, 16))
+
+    def test_currentRegisters(self):
+        clk = ClockSignal()
+        r = Register(clk, 1, 2)
+        res, c = KoggeStoneAdder(r, Vector(1, 2))
+        r.connect(res)
+        for _ in range(8):
+            c = res.current()
+            self.assertCurrent(r)
+            self.assertCurrent(res)
+            clk.cycle()
+            self.assertEqual(r.current(), c)
 
 if __name__ == "__main__":
     # import sys;sys.argv = ['', 'Test.testName']
