@@ -584,8 +584,9 @@ class Test(unittest.TestCase):
         s9, d9 = cs.RRA(R(7))
 
         debuglines = CPU(cs.code, clk)
-        clk.cycle(d1)
+        clk.cycle(d1, debuglines)
         clk.cycle(d2)
+        self.assertEquals(debuglines['src'], Vector(-32768, 16))
         clk.cycle(d3)
         clk.cycle(d4)
         clk.cycle(d5)
@@ -594,6 +595,7 @@ class Test(unittest.TestCase):
         clk.cycle(d8, debuglines)
         clk.cycle(d9, debuglines)
         self.assertEquals(debuglines['regs'][4], Vector(v / 2, 16))
+        self.assertCurrent(debuglines['regs'][4])
         self.assertEquals(debuglines['regs'][5], Vector(v / 4, 16))
         self.assertEquals(debuglines['regs'][6], Vector(v / 8, 16))
         self.assertEquals(debuglines['regs'][7], Vector(v / 16, 16))

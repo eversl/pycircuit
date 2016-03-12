@@ -17,47 +17,47 @@ def zip_all(*args):
                 raise TypeError('Vectors are not of equal size')
     return zip(*args)
 
-
 def simulate(signals, recur=None):
-    global sim_steps
+    global sim_steps, max_recur
+    do_recur = False
     if recur is None:
         recur = Counter()
+        do_recur = True
     sim_steps += 1
     next_signals = set()
     for sig in signals:
         if isinstance(sig, FeedbackSignal):
             recur.update(sig)
-            if recur[sig] >= 8:
+            if recur[sig] >= 6:
+                def findPrev(sigs, targ):
+                    if targ in sigs:
+                        return [targ]
+                    allArgs = [s.args for s in sigs]
+                    path = findPrev(sum(allArgs, []), targ)
+                    return path + [sigs[[n for n, a in enumerate(allArgs) if path[-1] in a][0]]]
+
+                path = findPrev(sig.args, sig)
+                nexts = sum((sig.eval() for sig in path), [])
+                nexts2 = sum((sig.eval() for sig in path), [])
+                recur[sig] = 0
+
+                new_nexts = set(nexts) - set(path)
+                next_signals.update(new_nexts)
+
                 continue
         next_signals.update(sig.eval())
-    if len(next_signals) > 0:
-        over_limit = False
-        for e in (e for e in recur if recur[e] >= 16):
-            over_limit = True
-            print "After sim_step %i: FeedbackSignal %i (%i times)" % (sim_steps, id(e), recur[e])
-            fr = e.stack
-            for _ in xrange(4):
-                print 'File "%s", line %i, in %s\n%s' % (
-                    fr.f_code.co_filename, fr.f_lineno, fr.f_code.co_name, inspect.findsource(fr)[0][fr.f_lineno - 1]),
-                fr = fr.f_back
+    if not next_signals:
+        return
+    simulate(next_signals, recur)
 
-            frame = inspect.currentframe()
-            cs = set(e)
-            while True:
-                if e in cs:
-                    break
-                print cs
-                frame = frame.f_back
-                cs = set(s for s in frame.f_locals['signals'] if cs & set(s.fanout))
-                if e in cs:
-                    break
+    # if do_recur:
+    #     # for s in recur:
+    #     #     if recur[s] >= 5:
+    #     #         s.simulate()
+    #     simulate(s for s in recur)
+    #     simulate(signals)
 
-        if over_limit:
-            raise Exception("Too many iterations")
-        simulate(next_signals, recur)
-    else:
-        if len(recur) > 0:
-            simulate(s for s in recur if recur[s] >= 4)
+    return
 
 
 def simplify(*args):
@@ -156,6 +156,10 @@ class Signal(object):
     def current(self):
         return self.value
 
+    def checkEqual(self, val):
+        if val != self.value:
+            print self, "current result", val, "not equal to", self.value
+
 
 class TestSignal(Signal):
     def set(self, value=True):
@@ -183,6 +187,10 @@ class ClockSignal(TestSignal):
             current_cache.clear()
             for r, v in newvals:
                 r.const = v
+            # for nn, (r, v) in enumerate(newvals):
+            #     assert r.current() == v
+            #     mask = (1 << len(r.ls)) - 1
+            #     assert r.current() & mask == signalsToInt(r.ls) & mask, (r.current(), signalsToInt(r.ls), len(r.ls), _, nn)
 
             if CPU_state is not None:
                 print "==============================="
@@ -213,8 +221,7 @@ class FeedbackSignal(Signal):
         else:
             val = self.args[0].current()
 
-        if val != self.value:
-            print self, "current result", val, "not equal to", self.value
+        self.checkEqual(val)
         current_cache[id(self)] = val
         return val
 
@@ -427,9 +434,30 @@ class Vector(object):
                     v = sum(1 << i for i, v in enumerate(vals) if type(v) is not DontCare and v)
                     val = DontCare(v, mask)
         current_cache[id(self)] = val
+        self.checkEqual(val)
+        return val
+
+    def checkEqual(self, val):
         if type(val) is not DontCare and val & ((1 << len(self.ls)) - 1) != signalsToInt(self.ls, False):
             print self, "current result", val, "not equal to", signalsToInt(self.ls, False)
-        return val
+            stack = self.stack
+            for _ in range(4):
+                print 'File "{0}", line {1}, in {2}'.format(stack.f_code.co_filename, stack.f_lineno,
+                                                            stack.f_code.co_name)
+                stack = stack.f_back
+                if not stack:
+                    break
+            if isinstance(self, FeedbackVector):
+                return
+            if not self.func:
+                return
+            try:
+                print 'operation: File "{0}", line {1}, in {2}'.format(self.func.func_code.co_filename,
+                                                                       self.func.func_code.co_firstlineno,
+                                                                       self.func.__name__)
+            except:
+                print 'operation: <builtin> {0}'.format(self.func.__name__)
+            print "on arguments:", self.args
 
     @classmethod
     def op(cls, fn, *args):
@@ -497,8 +525,7 @@ class FeedbackVector(Vector):
         val = self.arg.current()
 
         current_cache[id(self)] = val
-        if val & ((1 << len(self.ls)) - 1) != signalsToInt(self.ls, False):
-            print self, "current result", val, "not equal to", signalsToInt(self.ls, False)
+        self.checkEqual(val)
         return val
 
 
@@ -664,8 +691,7 @@ class CircuitOper(Signal):
                 print 'Unequal !'
             val = valTrue if valTrue == valFalse else DontCare(valTrue ^ valFalse, not valTrue ^ valFalse)
 
-        if val != self.value:
-            print self, "current result", val, "not equal to", self.value
+        self.checkEqual(val)
         current_cache[id(self)] = val
         return val
 
@@ -1071,8 +1097,7 @@ class Register(FeedbackVector):
     def connect(self, next):
         self.next = next
         FeedbackVector.connect(self, FlipFlops(next, self.clk, [e.value for e in self.ls]))
-        if self.const & ((1 << len(self.ls)) - 1) != signalsToInt(self.ls, False):
-            print self, "current result", self.const, "not equal to", signalsToInt(self.ls, False)
+        self.checkEqual(self.const)
         return self
 
     def ccase(self, state, cases, default=None):
@@ -1082,6 +1107,5 @@ class Register(FeedbackVector):
     def current(self):
         val = self.const
 
-        if val & ((1 << len(self.ls)) - 1) != signalsToInt(self.ls, False):
-            print self, "current result", val, "not equal to", signalsToInt(self.ls, False)
+        self.checkEqual(val)
         return val
