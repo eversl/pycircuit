@@ -17,8 +17,33 @@ def zip_all(*args):
                 raise TypeError('Vectors are not of equal size')
     return zip(*args)
 
+
+monitored = []
+monitoredVectors = []
+
+
+def monitor(val):
+    global monitored
+    if isinstance(val, Vector):
+        monitored.extend(val.ls)
+        monitoredVectors.append(val)
+    else:
+        monitored.extend(val)
+        monitoredVectors.append(val)
+
+
+def printMonitored():
+    print "{:>8d}:  {}".format(sim_steps,
+                               "".join(("{:^16}".format([k for k in v.enum if v.enum[k] == v])
+                                        if v.enum else "{:^8}".format(signalsToInt(v.ls)))
+                                       if isinstance(v, Vector) else
+                                       "".join("-" if s.value else "_" for s in v)
+                                       for v in monitoredVectors))
+
+
+
 def simulate(signals, recur=None):
-    global sim_steps, max_recur
+    global sim_steps
     do_recur = False
     if recur is None:
         recur = Counter()
@@ -28,24 +53,35 @@ def simulate(signals, recur=None):
     for sig in signals:
         if isinstance(sig, FeedbackSignal):
             recur.update(sig)
-            if recur[sig] >= 6:
-                def findPrev(sigs, targ):
+            if recur[sig] >= 8:
+                def findPrev(sigs, targ, oldSigs):
+                    # print len(sigs)
                     if targ in sigs:
                         return [targ]
                     allArgs = [s.args for s in sigs]
-                    path = findPrev(sum(allArgs, []), targ)
+                    allArgSet = set()
+                    for s in allArgs:
+                        allArgSet.update(s)
+                    allArgSet.difference_update(oldSigs)
+                    if not allArgSet:
+                        return sigs
+                    oldSigs.update(allArgSet)
+                    path = findPrev(list(allArgSet), targ, oldSigs)
                     return path + [sigs[[n for n, a in enumerate(allArgs) if path[-1] in a][0]]]
 
-                path = findPrev(sig.args, sig)
+                path = findPrev(sig.args, sig, set())
+                print "findPrev", sig
                 nexts = sum((sig.eval() for sig in path), [])
-                nexts2 = sum((sig.eval() for sig in path), [])
-                recur[sig] = 0
+                # recur[sig] = 0
 
-                new_nexts = set(nexts) - set(path)
+                new_nexts = set(nexts)
                 next_signals.update(new_nexts)
 
                 continue
         next_signals.update(sig.eval())
+    global monitored
+    if any(s in signals for s in monitored):
+        printMonitored()
     if not next_signals:
         return
     simulate(next_signals, recur)
@@ -178,19 +214,19 @@ class ClockSignal(TestSignal):
         TestSignal.__init__(self, initval)
         self.registers = []
 
-
     def cycle(self, n=1, CPU_state=None):
         for _ in xrange(n):
-            newvals = [(r, r.next.current()) for r in self.registers]
+            newvals = [(r, r.next.current()) for e, r in enumerate(self.registers)]
             self.set()
             self.reset()
             current_cache.clear()
             for r, v in newvals:
                 r.const = v
-            # for nn, (r, v) in enumerate(newvals):
-            #     assert r.current() == v
-            #     mask = (1 << len(r.ls)) - 1
-            #     assert r.current() & mask == signalsToInt(r.ls) & mask, (r.current(), signalsToInt(r.ls), len(r.ls), _, nn)
+            for nn, (r, v) in enumerate(newvals):
+                assert r.current() == v
+                mask = (1 << len(r.ls)) - 1
+                assert r.current() & mask == signalsToInt(r.ls) & mask, (
+                r.current(), signalsToInt(r.ls), len(r.ls), _, nn)
 
             if CPU_state is not None:
                 print "==============================="
@@ -466,6 +502,7 @@ class Vector(object):
         res.args = args
         return res
 
+
 class TestVector(Vector):
     def __init__(self, value, bits=16):
         Vector.__init__(self, value)
@@ -490,7 +527,6 @@ class TestVector(Vector):
 
 
 class FeedbackVector(Vector):
-    # TODO: simplify so it reuses more code from its super
     def __init__(self, value=None, bits=16):
         if value is None: value = 0
 
@@ -915,6 +951,7 @@ def If(pred, cons, alt):
             return cons.current() if pred else alt.current()
 
         return inner
+
     if isinstance(pred, Vector):
         pred = Or(*pred[:])
     npred = Not(pred)
@@ -964,25 +1001,31 @@ def Decoder(arg):
     return res
 
 
-def Memory(mem_addr, data, isWrite, init=None):
-    def current_func(values):
+def Memory(clk, addr, data, isWrite, init=None):
+    def current_func(values, q_outs):
         def inner(mem_addr, data, isWrite):
             if isWrite:
                 values[mem_addr] = data
-                return data
-            else:
-                return values[mem_addr]
+            q_vals = [signalsToInt([q.args[0] for q in qs], False) for qs in q_outs]
+            uvalues = [v & ~(-1 << len(q_outs[0])) for v in values]
+            if q_vals != uvalues:
+                assert q_vals == uvalues, (q_vals, uvalues)
+            return values[mem_addr]
 
         return inner
 
     if not init:
         init = []
-    collines = Decoder(mem_addr[len(mem_addr) / 2:])
-    rowlines = Decoder(mem_addr[:len(mem_addr) / 2])
+    delayedAddr = addr
+    collines = Decoder(delayedAddr[len(delayedAddr) / 2:])
+    rowlines = Decoder(delayedAddr[:len(delayedAddr) / 2])
 
     wordlines = [c & r for c in collines for r in rowlines]
 
-    isWriteVec = isWrite.extendTo(len(data), signal=isWrite)
+    delayedWrite = ~~(isWrite & clk)
+    doWrite = isWrite & ~clk
+
+    isWriteVec = doWrite.extendTo(len(data), signal=doWrite)
     sets = Vector.op(__and__, isWriteVec, data)
     resets = Vector.op(__and__, isWriteVec, ~data)
     initvalues = (init + [0] * (len(wordlines) - len(init)))
@@ -991,8 +1034,9 @@ def Memory(mem_addr, data, isWrite, init=None):
                for (s, r, b) in zip_all(sets, resets, list(intToBits(val, len(data))))]
               for access, val in zip_all(wordlines, initvalues)]
     res = Vector([Or(*l) for l in zip(*q_outs)])
-    res.args = [mem_addr, data, isWrite]
-    res.func = current_func(initvalues)
+    res.args = [delayedAddr, data, isWrite]
+    res.func = current_func(initvalues, q_outs)
+    res.q_outs = q_outs
     return res
 
 

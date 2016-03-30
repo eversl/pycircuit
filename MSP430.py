@@ -509,8 +509,9 @@ def CPU(mem_init, clk):
                                  'CALL1': sp_reg,
                                  'CALL2': idx_addr.prev})
 
-    mem_out = Memory(mem_addr[1:8], prev_mem_in.prev,
-                     TrueInCase(state.prev, ('DST_PUT', 'PUSH', 'CALL1')), mem_init)
+    isWrite = TrueInCase(state.prev, ('DST_PUT', 'PUSH', 'CALL1'))
+    mem_out = Memory(clk, mem_addr[1:8], prev_mem_in.prev,
+                     isWrite, mem_init)
 
     instr_word.ccase(state.prev, {'FETCH': mem_out})
 
@@ -550,8 +551,9 @@ def CPU(mem_init, clk):
                                 'JL': flags_in['n'] ^ flags_in['v'],
                                 })
 
+    pc_incr = TrueInCase(state.prev, ('FETCH', 'SRC_IDX', 'DST_IDX'))
     src_out, dst_out, regs, src_incr = \
-        RegisterFile(pc_incr=TrueInCase(state.prev, ('FETCH', 'SRC_IDX', 'DST_IDX')),
+        RegisterFile(pc_incr=pc_incr,
                      src_reg=src_reg,
                      dst_reg=Case(state.prev, {('PUSH', 'CALL1'): Vector(1, 4),
                                                'CALL2': Vector(0, 4)}, dst_reg),
@@ -584,7 +586,8 @@ def CPU(mem_init, clk):
                                Case(inst_bw,
                                     {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(mem_out[8:]).concat(mem_out[:8]),
                                                            mem_out),
-                                     BYTE_WORD['WORD']: mem_out})})
+                                     BYTE_WORD['WORD']: mem_out}),
+                           ('DST_PUT', 'PUSH', 'CALL1'): mem_out})
 
     alu_out, flags_out = alu(instr, src.next, dst.next, flags_in, inst_bw)
 
@@ -599,7 +602,7 @@ def CPU(mem_init, clk):
 
     status_reg_out = Vector(flag_for_bit(n, b) for n, b in enumerate(regs[2]))
 
-    prev_mem_in.ccase(instr, {INSTRS['CALL']: pc_reg},
+    prev_mem_in.ccase(instr, {INSTRS['CALL']: pc_reg + Vector(2, 16)},
                       Case(inst_bw,
                            {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(alu_out[8:]).concat(alu_out[:8]), dst_in),
                             BYTE_WORD['WORD']: alu_out}))
@@ -629,8 +632,7 @@ def CPU(mem_init, clk):
                                                            Case(a_s, {SRC_M['M_DIRECT']:
                                                                           Case(instr,
                                                                                {INSTRS['PUSH']: STATES['PUSH'],
-                                                                                INSTRS['CALL']: STATES[
-                                                                                    'CALL1']},
+                                                                                INSTRS['CALL']: STATES['CALL1']},
                                                                                STATES['FETCH']),
                                                                       SRC_M['M_INCR']: STATES['SRC_INCR'],
                                                                       SRC_M['M_INDIRECT']: STATES['SRC_INDIRECT'],

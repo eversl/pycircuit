@@ -10,7 +10,7 @@ from MSP430 import CPU, CodeSequence, N, R, B
 from PyCircuit import TestSignal, FullAdder, SRLatch, DLatch, DFlipFlop, \
     intToSignals, signalsToInt, RippleCarryAdder, Vector, Multiplier, \
     Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder, \
-    TestVector, Signal, DecimalAdder, simplify, Case, DontCare, current_cache, ClockSignal, Register
+    TestVector, Signal, DecimalAdder, simplify, Case, DontCare, current_cache, ClockSignal, Register, printMonitored
 
 
 class Test(unittest.TestCase):
@@ -36,7 +36,6 @@ class Test(unittest.TestCase):
         r.set()
         self.assertEquals([sig.value for sig in signals], [False, False])
 
-
     def test_DLatch(self):
         d = TestSignal()
         e = TestSignal(True)
@@ -54,7 +53,6 @@ class Test(unittest.TestCase):
         self.assertEquals([sig.value for sig in signals], [True, False])
         e.reset()
         self.assertEquals([sig.value for sig in signals], [True, False])
-
 
     def test_DFlipFlop(self):
         d = TestSignal()
@@ -96,13 +94,11 @@ class Test(unittest.TestCase):
         c.set()  # sum = 3
         self.assertEquals([sig.value for sig in signals], [True, True])
 
-
     def test_intConversion(self):
         for i in xrange(-100, 256):
             ls = intToSignals(i, 9)
             j = signalsToInt(ls, True)
             self.assertEqual(i, j)
-
 
     def test_RippleCarryAdder(self):
         for a in xrange(-256, 255, 67):
@@ -114,7 +110,6 @@ class Test(unittest.TestCase):
                     sum = int(sls)
                     self.assertEqual(sum, a + b + c)
                     self.assertEqual(c_out.value, a < 0)
-
 
     def test_KoggeStoneAdder(self):
         for a in xrange(-256, 255, 67):
@@ -188,7 +183,6 @@ class Test(unittest.TestCase):
                     self.assertEqual(sum, a + b + c)
                     self.assertEqual(bool(c_out), a < 0)
 
-
     def test_arith(self):
         self.assertEquals(int(-TestVector(10)), -10)
         self.assertEquals(int(TestVector(10) + TestVector(-24)), 10 + -24)
@@ -206,7 +200,6 @@ class Test(unittest.TestCase):
             neg = int(sls)
             self.assertEqual(neg, -num)
 
-
     def test_Multiplier(self):
         bitlen = 8
         a = TestVector(0, bitlen)
@@ -220,7 +213,6 @@ class Test(unittest.TestCase):
                 b[:] = bv
                 self.assertEqual(signalsToInt(m, False), av * bv)
 
-
     def test_Decoder(self):
         a = TestVector(0, 8)
         d = Decoder(a)
@@ -228,12 +220,12 @@ class Test(unittest.TestCase):
             a[:] = i
             self.assertEqual(signalsToInt(Vector(d), False), 2 ** i)
 
-
     def test_Memory(self):
+        clk = ClockSignal()
         a = TestVector(0, 8)
         d = TestVector(0, 16)
         mem_wr = TestVector([False])
-        q = Memory(a, d, mem_wr)
+        q = Memory(clk, a, d, mem_wr)
         self.assertCurrent(q)
         print calcAreaDelay(a)
         print calcAreaDelay(d)
@@ -299,7 +291,6 @@ class Test(unittest.TestCase):
         v[:] = 2
         self.assert_(all(type(el.value) is DontCare for el in res.ls))
         self.assertCurrent(res)
-
 
     def test_MSP430RegisterFile(self):
         clk = ClockSignal()
@@ -514,7 +505,6 @@ class Test(unittest.TestCase):
                     (2 ** 15 - 2, 2 ** 15 - 1, 'c', 'vc'), (-2 ** 15 - 2, -2 ** 15 + 1, 'nc', 'nc')]
         self.two_arg_alu('XOR', lambda a, b: a ^ b, test_seq)
 
-
     def one_arg_alu(self, instr, op, test_seq):
         clk = ClockSignal()
         cs = CodeSequence()
@@ -585,8 +575,8 @@ class Test(unittest.TestCase):
 
         debuglines = CPU(cs.code, clk)
         clk.cycle(d1, debuglines)
-        clk.cycle(d2)
-        self.assertEquals(debuglines['src'], Vector(-32768, 16))
+        clk.cycle(d2, debuglines)
+        self.assertEquals(debuglines['regs'][4], Vector(v / 2, 16))
         clk.cycle(d3)
         clk.cycle(d4)
         clk.cycle(d5)
@@ -625,7 +615,6 @@ class Test(unittest.TestCase):
         clk.cycle(d5)
         clk.cycle(d6)
         self.assertEquals(debuglines['regs'][4], Vector(16676, 16))
-
 
     def test_BRANCH(self):
         clk = ClockSignal()
@@ -703,7 +692,6 @@ class Test(unittest.TestCase):
             clk.cycle(d3)
             self.assertEquals(debuglines['regs'][0], Vector(0, 16))
 
-
     def test_CALL(self):
         clk = ClockSignal()
         cs = CodeSequence()
@@ -712,14 +700,16 @@ class Test(unittest.TestCase):
         s2, d2 = cs.CALL(N(s0 * 2))
 
         debuglines = CPU(cs.code, clk)
-        clk.cycle(d0)
+        printMonitored()
+        CPU_state = {k: debuglines[k] for k in ['state', 'instr']}
+        clk.cycle(d0, CPU_state)
         self.assertEquals(debuglines['regs'][1], Vector(-2, 16))
-        clk.cycle(d1)
+        clk.cycle(d1, CPU_state)
         self.assertEquals(debuglines['regs'][4], Vector(0, 16))
-        clk.cycle(d2)
+        clk.cycle(d2, CPU_state)
         self.assertEquals(debuglines['regs'][0], Vector(s0 * 2, 16))
         self.assertEquals(debuglines['regs'][1], Vector(-4, 16))
-        clk.cycle(d1)
+        clk.cycle(d1, CPU_state)
         self.assertEquals(debuglines['regs'][4], Vector((s0 + s1 + s2) * 2, 16))
 
     def test_currentRegisters(self):
@@ -733,6 +723,7 @@ class Test(unittest.TestCase):
             self.assertCurrent(res)
             clk.cycle()
             self.assertEqual(r.current(), c)
+
 
 if __name__ == "__main__":
     # import sys;sys.argv = ['', 'Test.testName']
