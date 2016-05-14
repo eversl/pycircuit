@@ -6,7 +6,7 @@ Created on Feb 6, 2014
 import unittest
 
 import MSP430
-from MSP430 import CPU, CodeSequence, N, R, B
+from MSP430 import CPU, CodeSequence, N, R, B, R_PC, R_SP, R_SR
 from PyCircuit import TestSignal, FullAdder, SRLatch, DLatch, DFlipFlop, \
     intToSignals, signalsToInt, RippleCarryAdder, Vector, Multiplier, \
     Decoder, Memory, RegisterFile, calcAreaDelay, KoggeStoneAdder, \
@@ -615,6 +615,29 @@ class Test(unittest.TestCase):
         clk.cycle(d5)
         clk.cycle(d6)
         self.assertEquals(debuglines['regs'][4], Vector(16676, 16))
+
+    def test_RETI(self):
+        clk = ClockSignal()
+        cs = CodeSequence()
+        s0, d0 = cs.MOV(N(0xFFFF), R(R_SP))
+        s1, d1 = cs.EINT()
+        s2, d2 = cs.PUSH(R(R_PC))
+        s3, d3 = cs.PUSH(R(R_SR))
+        s4, d4 = cs.DINT()
+        s5, d5 = cs.RETI()
+
+        debuglines = CPU(cs.code, clk)
+        clk.cycle(d0)
+        self.assertEquals(debuglines['regs'][R_SP], Vector(-2, 16))
+        clk.cycle(d1)
+        self.assertEquals(debuglines['regs'][R_SR], Vector(8, 16))
+        clk.cycle(d2)
+        clk.cycle(d3)
+        clk.cycle(d4)
+        self.assertEquals(debuglines['regs'][R_SR], Vector(0, 16))
+        clk.cycle(d5, debuglines)
+        self.assertEquals(debuglines['regs'][R_SR], Vector(8, 16))
+        self.assertEquals(debuglines['regs'][R_PC], Vector((s0 + s1) * 2, 16))
 
     def test_BRANCH(self):
         clk = ClockSignal()

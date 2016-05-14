@@ -70,7 +70,7 @@ def simulate(signals, recur=None):
                     return path + [sigs[[n for n, a in enumerate(allArgs) if path[-1] in a][0]]]
 
                 path = findPrev(sig.args, sig, set())
-                print "findPrev", sig
+                print "findPrev", len(path), sig.stack.f_back.f_code.co_name
                 nexts = sum((sig.eval() for sig in path), [])
                 # recur[sig] = 0
 
@@ -1017,12 +1017,9 @@ def Memory(clk, addr, data, isWrite, init=None):
     if not init:
         init = []
     delayedAddr = addr
-    collines = Decoder(delayedAddr[len(delayedAddr) / 2:])
-    rowlines = Decoder(delayedAddr[:len(delayedAddr) / 2])
 
-    wordlines = [c & r for c in collines for r in rowlines]
+    wordlines = Decoder(delayedAddr)  # [c & r for c in collines for r in rowlines]
 
-    delayedWrite = ~~(isWrite & clk)
     doWrite = isWrite & ~clk
 
     isWriteVec = doWrite.extendTo(len(data), signal=doWrite)

@@ -194,7 +194,7 @@ class CodeSequence(object):
             return fn
 
         elif name in ONE_INSTR:
-            def fn(dst, b=False):
+            def fn(dst=R(0), b=False):
                 return self.one_operand_instr(ONE_INSTR[name], dst, b)
 
             return fn
@@ -206,6 +206,9 @@ class CodeSequence(object):
             return fn
         else:
             raise AttributeError
+
+    def RETI(self):
+        return self.one_operand_instr(ONE_INSTR['RETI'], +R(R_SP))
 
     # =============  emulated instructions ===================
 
@@ -287,11 +290,11 @@ class CodeSequence(object):
 
     # Pop byte/word from stack to destination
     def POP(self, dst, b):
-        return self.MOV(+R(1), dst, b)
+        return self.MOV(+R(R_SP), dst, b)
 
     # Return from subroutine
     def RET(self):
-        return self.MOV(+R(1), R(0))
+        return self.MOV(+R(R_SP), R(R_PC))
 
     # Rotate left arithmetically
     def RLA(self, dst, b):
@@ -476,7 +479,7 @@ def alu(instr, src, dst_in, flags_in, bw):
 
 
 STATES = Enum('FETCH', 'SRC_INDIRECT', 'SRC_INCR', 'SRC_IDX', 'DST_IDX', 'DST_GET', 'DST_PUT', 'SRC_GET',
-              'PUSH', 'CALL1', 'CALL2')
+              'PUSH', 'CALL1', 'CALL2', 'RETI1', 'RETI2')
 
 
 def CPU(mem_init, clk):
@@ -499,7 +502,7 @@ def CPU(mem_init, clk):
 
     mem_addr = Case(state.prev, {'FETCH': pc_reg,
                                  'SRC_INDIRECT': feedback_src_out,
-                                 'SRC_INCR': feedback_src_out,
+                                 ('SRC_INCR', 'RETI1', 'RETI2'): feedback_src_out,
                                  'SRC_IDX': pc_reg,
                                  'SRC_GET': idx_addr.prev,
                                  'DST_IDX': pc_reg,
@@ -535,12 +538,13 @@ def CPU(mem_init, clk):
                                       ('SRC_INDIRECT', 'SRC_INCR', 'SRC_GET'):
                                           TrueInCase(inst_type,
                                                      {I_TYPES['IT_TWO']: TrueInCase(a_d, DST_M['M_DIRECT'])}),
-                                      STATES["DST_GET"]: TrueInCase(inst_type, I_TYPES['IT_TWO'])}) &
+                                      'DST_GET': TrueInCase(inst_type, I_TYPES['IT_TWO'])}) &
               TrueInCase(inst_type, {I_TYPES['IT_TWO']: TrueInCase(a_d, DST_M['M_DIRECT']),
                                      I_TYPES['IT_ONE']: TrueInCase(a_s, SRC_M['M_DIRECT'])}) &
               ~TrueInCase(instr, INSTRS['PUSH'])) | \
              TrueInCase(instr, {'PUSH': TrueInCase(state.prev, ('PUSH',)),
                                 'CALL': TrueInCase(state.prev, ('CALL1', 'CALL2')),
+                                'RETI': TrueInCase(state.prev, ('RETI1', 'RETI2')),
                                 'JMP': Vector(1, 1),
                                 'JNZ': ~flags_in['z'],
                                 'JZ': flags_in['z'],
@@ -554,10 +558,11 @@ def CPU(mem_init, clk):
     pc_incr = TrueInCase(state.prev, ('FETCH', 'SRC_IDX', 'DST_IDX'))
     src_out, dst_out, regs, src_incr = \
         RegisterFile(pc_incr=pc_incr,
-                     src_reg=src_reg,
-                     dst_reg=Case(state.prev, {('PUSH', 'CALL1'): Vector(1, 4),
-                                               'CALL2': Vector(0, 4)}, dst_reg),
-                     src_incr=TrueInCase(state.prev, ('SRC_INCR',)),
+                     src_reg=Case(instr, {'RETI': Vector(R_SP, 4)}, src_reg),
+                     dst_reg=Case(state.prev, {('PUSH', 'CALL1'): Vector(R_SP, 4),
+                                               ('RETI1',): Vector(R_SR, 4),
+                                               ('CALL2', 'RETI2'): Vector(R_PC, 4)}, dst_reg),
+                     src_incr=TrueInCase(state.prev, ('SRC_INCR', 'RETI1', 'RETI2')),
                      src_mode=a_s,
                      dst_in=Case(inst_bw,
                                  {BYTE_WORD['BYTE']: Vector(dst_in[:8]).extendTo(16),
@@ -573,14 +578,14 @@ def CPU(mem_init, clk):
 
     idx_addr.ccase(state.prev, {'SRC_IDX': src_out + mem_out,
                                 'DST_IDX': dst_out + mem_out,
-                                'SRC_INCR': src_incr,
+                                ('SRC_INCR', 'RETI1', 'RETI2'): src_incr,
                                 'SRC_INDIRECT': src_out})
 
     src.ccase(state.prev, {'FETCH': Case(inst_type, {I_TYPES['IT_JUMP']:
                                                          offset.extendBy(1, LSB=True).extendTo(16,
                                                                                                signed=True)},
                                          src_out),
-                           ('SRC_INDIRECT', 'SRC_INCR', 'SRC_GET'): mem_out})
+                           ('SRC_INDIRECT', 'SRC_INCR', 'SRC_GET', 'RETI1', 'RETI2'): mem_out})
     dst.ccase(state.prev, {'FETCH': dst_out,
                            STATES['DST_GET']:
                                Case(inst_bw,
@@ -607,7 +612,8 @@ def CPU(mem_init, clk):
                            {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(alu_out[8:]).concat(alu_out[:8]), dst_in),
                             BYTE_WORD['WORD']: alu_out}))
 
-    dst_in.connect(Case(state.prev, {('PUSH', 'CALL1'): sp_reg}, alu_out))
+    dst_in.connect(Case(state.prev, {('PUSH', 'CALL1'): sp_reg,
+                                     ('RETI1', 'RETI2'): mem_out}, alu_out))
     sr_in.connect(status_reg_out)
 
     next_dst_state = Case(a_d, {'M_DIRECT': STATES['FETCH'],
@@ -632,9 +638,12 @@ def CPU(mem_init, clk):
                                                            Case(a_s, {SRC_M['M_DIRECT']:
                                                                           Case(instr,
                                                                                {INSTRS['PUSH']: STATES['PUSH'],
-                                                                                INSTRS['CALL']: STATES['CALL1']},
+                                                                                INSTRS['CALL']: STATES['CALL1'],
+                                                                                INSTRS['RETI']: STATES['RETI1']},
                                                                                STATES['FETCH']),
-                                                                      SRC_M['M_INCR']: STATES['SRC_INCR'],
+                                                                      SRC_M['M_INCR']: Case(instr, {
+                                                                          INSTRS['RETI']: STATES['RETI1']},
+                                                                                            STATES['SRC_INCR']),
                                                                       SRC_M['M_INDIRECT']: STATES['SRC_INDIRECT'],
                                                                       SRC_M['M_INDEX']: STATES['SRC_IDX']}),
                                                        'IT_JUMP': STATES['FETCH']}),
@@ -642,7 +651,8 @@ def CPU(mem_init, clk):
                                  Case(inst_type, {'IT_TWO': next_dst_state,
                                                   'IT_ONE': Case(instr,
                                                                  {INSTRS['PUSH']: STATES['PUSH'],
-                                                                  INSTRS['CALL']: STATES['CALL1']},
+                                                                  INSTRS['CALL']: STATES['CALL1'],
+                                                                  INSTRS['RETI']: STATES['RETI1']},
                                                                  STATES['DST_PUT'])}),
                              'SRC_IDX': STATES['SRC_GET'],
                              'DST_IDX': STATES['DST_GET'],
@@ -650,6 +660,8 @@ def CPU(mem_init, clk):
                              'DST_PUT': STATES['FETCH'],
                              'CALL1': STATES['CALL2'],
                              'CALL2': STATES['FETCH'],
+                             'RETI1': STATES['RETI2'],
+                             'RETI2': STATES['FETCH'],
                              'PUSH': STATES['FETCH']})
 
     print calcAreaDelay(mem_addr.concat(prev_mem_in.next))
