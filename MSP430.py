@@ -4,7 +4,7 @@ Created on Mar 21, 2014
 @author: leonevers
 '''
 from PyCircuit import Vector, Memory, Decoder, FeedbackVector, If, zip_all, Or, calcAreaDelay, \
-    Enum, Case, EnumVector, KoggeStoneAdder, And, DecimalAdder, TrueInCase, Register
+    Enum, Case, SyntheticDecimalAdder, TrueInCase, Register, SyntheticAdder
 
 
 def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, dst_wr, bw, clk):
@@ -28,7 +28,7 @@ def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, d
                 zip_all(reg_sizes, src_incr_lines.prev, dst_wr_lines.prev, registers)]
 
     for reg, reg_val in zip_all(registers, [
-        If(pc_incr, Vector(out[16 - sz:]) + Vector(1, 15), out[16 - sz:]) if out is out_vals[0] else
+        If(pc_incr, out[16 - sz:] + Vector(1, 15), out[16 - sz:]) if out is out_vals[0] else
         If(dst_wr & ~dst_lines[2], sr_in, out[16 - sz:]) if out is out_vals[2] else
         out[16 - sz:] for sz, out in zip_all(reg_sizes, out_vals)]):
         reg.connect(reg_val)
@@ -41,8 +41,10 @@ def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, d
                                         SRC_M['M_INCR']: Vector(-1, 16)}, Vector(0, 16)) if out is out_vals[3]
     else out for out in out_vals]
 
-    src_out = Vector([Or(*l) for l in zip(*(src_line & q_out for src_line, q_out in zip_all(src_lines, cg_out_vals)))])
-    dst_out = Vector([Or(*l) for l in zip(*(dst_line & q_out for dst_line, q_out in zip_all(dst_lines, out_vals)))])
+    src_out = Vector.concat(*(Vector.concat(*l).reduce(Or)
+                              for l in zip(*(src_line & q_out for src_line, q_out in zip_all(src_lines, cg_out_vals)))))
+    dst_out = Vector.concat(*(Vector.concat(*l).reduce(Or)
+        for l in zip(*(dst_line & q_out for dst_line, q_out in zip_all(dst_lines, out_vals)))))
 
     src_incr_val.connect(src_out + If(~ bw[0] | src_lines[0] | src_lines[1], Vector(2, 16), Vector(1, 16)))
 
@@ -57,20 +59,19 @@ FLAGS = 'cznv'
 
 
 def decodeInstr(word):
-    inst_type = EnumVector(I_TYPES, If(word[15] | (~word[15] & word[14]), I_TYPES['IT_TWO'],
-                                       If(word[13], I_TYPES['IT_JUMP'], I_TYPES['IT_ONE'])))
-    instr = EnumVector(INSTRS, If(word[15] | (~word[15] & word[14]), Vector(word[12:]).extendBy(1),
-                                  If(word[13], Vector(word[10:13]).concat(I_TYPES['IT_JUMP']),
-                                     Vector(word[7:10]).concat(I_TYPES['IT_ONE']))))
-    dst_reg = Case(inst_type, {I_TYPES['IT_JUMP']: Vector(0, 4)},
-                   Vector(word[0:4]))
-    src_reg = Case(inst_type, {I_TYPES['IT_TWO']: Vector(word[8:12]),
+    inst_type = If(word[15] | (~word[15] & word[14]), I_TYPES['IT_TWO'],
+                                       If(word[13], I_TYPES['IT_JUMP'], I_TYPES['IT_ONE'])).makeEnum(I_TYPES)
+    instr = If(word[15] | (~word[15] & word[14]), word[12:].extendBy(1),
+                                  If(word[13], word[10:13].concat(I_TYPES['IT_JUMP']),
+                                     word[7:10].concat(I_TYPES['IT_ONE']))).makeEnum(INSTRS)
+    dst_reg = Case(inst_type, {I_TYPES['IT_JUMP']: Vector(0, 4)}, word[0:4])
+    src_reg = Case(inst_type, {I_TYPES['IT_TWO']: word[8:12],
                                I_TYPES['IT_ONE']: dst_reg})
     bw = Case(inst_type, {I_TYPES['IT_JUMP']: BYTE_WORD['WORD']},
-              EnumVector(BYTE_WORD, word[6]))
-    a_s = EnumVector(SRC_M, word[4:6])
-    a_d = EnumVector(DST_M, word[7])
-    offset = Vector(word[:10])
+              word[6].makeEnum(BYTE_WORD))
+    a_s = word[4:6].makeEnum(SRC_M)
+    a_d = word[7].makeEnum(DST_M)
+    offset = word[:10]
 
     return instr, inst_type, src_reg, dst_reg, bw, a_s, a_d, offset
 
@@ -386,10 +387,9 @@ def alu(instr, src, dst_in, flags_in, bw):
     def calc_alu(fn, *args):
         out, flags_upd = fn(*args)
         n_out = out[-1]  # negative equals sign bit
-        z_out = Vector(And(*Vector(~(a ^ b) for a, b in zip_all(Vector(out), Vector(0, len(out))))))
-        c_out = ~z_out
+        c_out = out.reduce(Or)
+        z_out = ~c_out
         v_out = Vector(0, 1)
-        # src[-1] & dst_in[-1]
         flags = {'c': c_out, 'n': n_out, 'z': z_out, 'v': v_out}
         flags.update(flags_upd)
         return out, flags
@@ -398,16 +398,17 @@ def alu(instr, src, dst_in, flags_in, bw):
         return src, flags_in
 
     def do_add_sub(als, bls, c, instr):
-        bls = Case(instr, {(INSTRS['ADD'], INSTRS['ADDC']): bls,
-                           (INSTRS['SUB'], INSTRS['SUBC'], INSTRS['CMP']): -bls})
-        sls, c_out = KoggeStoneAdder(als, bls, c)
-        v_out = (als[-1] ^ sls[-1]) & (bls[-1] ^ sls[-1])
-        return (sls), {'c': c_out, 'v': v_out}
+        bls, c = Case(instr, {(INSTRS['ADD'], INSTRS['ADDC']): (bls, c),
+                           (INSTRS['SUB'], INSTRS['SUBC'], INSTRS['CMP']): (~bls, ~c)})
+        sls = SyntheticAdder(als, bls, c)
+        slsMsb = sls[-2]
+        v_out = (als[-1] ^ slsMsb) & (bls[-1] ^ slsMsb)
+        return sls[:-1], {'c': sls[-1], 'v': v_out}
 
     def do_dadd(als, bls, c):
-        sls, c_out = DecimalAdder(als, bls, c)
-        out = Vector(sls)
-        return out, {'c': c_out}
+        sls = SyntheticDecimalAdder(als, bls, c)
+        out = sls[:-1]
+        return out, {'c': sls[-1]}
 
     def do_and(src, dst_in):
         out = src & dst_in
@@ -513,7 +514,7 @@ def CPU(mem_init, clk):
                                  'CALL2': idx_addr.prev})
 
     isWrite = TrueInCase(state.prev, ('DST_PUT', 'PUSH', 'CALL1'))
-    mem_out = Memory(clk, mem_addr[1:8], prev_mem_in.prev,
+    mem_out = Memory(clk, mem_addr[1:10], prev_mem_in.prev,
                      isWrite, mem_init)
 
     instr_word.ccase(state.prev, {'FETCH': mem_out})
@@ -565,7 +566,7 @@ def CPU(mem_init, clk):
                      src_incr=TrueInCase(state.prev, ('SRC_INCR', 'RETI1', 'RETI2')),
                      src_mode=a_s,
                      dst_in=Case(inst_bw,
-                                 {BYTE_WORD['BYTE']: Vector(dst_in[:8]).extendTo(16),
+                                 {BYTE_WORD['BYTE']: dst_in[:8].extendTo(16),
                                   BYTE_WORD['WORD']: dst_in}),
                      sr_in=sr_in,
                      dst_wr=dst_wr,
@@ -589,7 +590,7 @@ def CPU(mem_init, clk):
     dst.ccase(state.prev, {'FETCH': dst_out,
                            STATES['DST_GET']:
                                Case(inst_bw,
-                                    {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(mem_out[8:]).concat(mem_out[:8]),
+                                    {BYTE_WORD['BYTE']: If(mem_addr[0], mem_out[8:].concat(mem_out[:8]),
                                                            mem_out),
                                      BYTE_WORD['WORD']: mem_out}),
                            ('DST_PUT', 'PUSH', 'CALL1'): mem_out})
@@ -601,15 +602,15 @@ def CPU(mem_init, clk):
     def flag_for_bit(n, b):
         if n in REV_FLAGS_SR_BITS:
             res = flags_out[REV_FLAGS_SR_BITS[n]]
-            return res.ls[0]
+            return res
         else:
             return b
 
-    status_reg_out = Vector(flag_for_bit(n, b) for n, b in enumerate(regs[2]))
+    status_reg_out = Vector.concat(*(flag_for_bit(n, b) for n, b in enumerate(regs[2])))
 
     prev_mem_in.ccase(instr, {INSTRS['CALL']: pc_reg + Vector(2, 16)},
                       Case(inst_bw,
-                           {BYTE_WORD['BYTE']: If(mem_addr[0], Vector(alu_out[8:]).concat(alu_out[:8]), dst_in),
+                           {BYTE_WORD['BYTE']: If(mem_addr[0], alu_out[8:].concat(alu_out[:8]), dst_in),
                             BYTE_WORD['WORD']: alu_out}))
 
     dst_in.connect(Case(state.prev, {('PUSH', 'CALL1'): sp_reg,
@@ -666,7 +667,7 @@ def CPU(mem_init, clk):
 
     print calcAreaDelay(mem_addr.concat(prev_mem_in.next))
     return {'state': state.prev, 'src_reg': src_reg, 'dst_reg': dst_reg,
-            'src_out': src_out, 'dst_out': dst_out, 'mem_addr': Vector(mem_addr), 'mem_out': mem_out,
+            'src_out': src_out, 'dst_out': dst_out, 'mem_addr': mem_addr, 'mem_out': mem_out,
             'regs': regs, 'src': src.next, 'dst': dst.next, 'dst_in': dst_in, 'dst_wr': dst_wr,
             'idx_addr': idx_addr.next,
             'instr': instr, 'sr_in': sr_in, 'mem_in': prev_mem_in.next}
