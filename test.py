@@ -207,7 +207,7 @@ class Test(unittest.TestCase):
         bitlen = 8
         a = TestVector(255, bitlen)
         b = TestVector(255, bitlen)
-        m = Vector(Multiplier(a, b, False))
+        m = Multiplier(a, b, False)
         print calcAreaDelay(a[:] + b[:])
         self.assertEqual(len(m), bitlen * 2)
         for av in xrange(2, 2 ** bitlen, 23):
@@ -300,7 +300,7 @@ class Test(unittest.TestCase):
         src_mode = TestVector(0, 2)
         dst_in = TestVector(0, 16)
         sr_in = TestVector(0, 16)
-        dst_wr = TestVector(0, 1)
+        dst_wr = TestVector(1, 1)
         bw = TestVector(0, 1)
         pc_incr = TestVector(0, 1)
         src_out, dst_out, regs, src_incr_val = MSP430.RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode,
@@ -308,54 +308,48 @@ class Test(unittest.TestCase):
                                                                    dst_wr, bw,
                                                                    clk)
 
-        dst_wr[:] = 1
         for r in xrange(16):
             if r == 3: continue  # register 3 is only constant generator
             dst_reg[:] = r
-            dst_in[:] = r * r * (r + 1)
-            clk.cycle()
-            # print 'src_out', src_out
-            self.assertCurrent(src_out)
-            self.assertVectorEqual(src_out, 0)
-            # print 'dst_out', dst_out
-            self.assertCurrent(dst_out)
-            self.assertVectorEqual(dst_out, r * r * (r + 1))
+            dst_in[:] = r * 2 + 4
+            self.cycleAndCheck(clk, dst_out, regs, src_incr_val, src_out)
+            self.assertVectorEqual(dst_out, r * 2 + 4)
 
         for r, reg in enumerate(regs):
             if r not in [2, 3]:
                 # print 'reg', r, reg
                 self.assertCurrent(reg)
-                self.assertVectorEqual(reg, r * r * (r + 1))
+                self.assertVectorEqual(reg, r * 2 + 4)
 
         for r in xrange(16):
             sr_in[:] = r
-            clk.cycle()
-            # print 'sr', r, regs[2]
-            self.assertCurrent(regs[2])
+            self.cycleAndCheck(clk, dst_out, regs, src_incr_val, src_out)
             self.assertVectorEqual(regs[2], r)
 
         sr_in[:] = 3
         dst_reg[:] = 2
         dst_in[:] = 5
-        clk.cycle()
-        print 'sr', r, regs[2]
-        self.assertCurrent(regs[2])
+        self.cycleAndCheck(clk, dst_out, regs, src_incr_val, src_out)
         self.assertVectorEqual(regs[2], 5)
 
-        dst_wr.set(False)
+        dst_wr[:] = 0
         sr_in[:] = 4
         dst_in[:] = 6
-        clk.cycle()
-        # print 'sr', r, regs[2]
-        self.assertCurrent(regs[2])
+        self.cycleAndCheck(clk, dst_out, regs, src_incr_val, src_out)
         self.assertVectorEqual(regs[2], 5)
 
-        pc_incr.set(True)
+        pc_incr[:] = 1
         for r in xrange(16):
-            clk.cycle()
-            # print 'pc', regs[0]
-            self.assertCurrent(regs[0])
-            self.assertVectorEqual(regs[0], r * 2 + 2)
+            self.cycleAndCheck(clk, dst_out, regs, src_incr_val, src_out)
+            self.assertVectorEqual(regs[0], r * 2 + 6)
+
+    def cycleAndCheck(self, clk, dst_out, regs, src_incr_val, src_out):
+        clk.cycle()
+        self.assertCurrent(src_out)
+        self.assertCurrent(dst_out)
+        for reg in regs:
+            self.assertCurrent(reg)
+        self.assertCurrent(src_incr_val)
 
     def test_CPU_init(self):
         clk = Clock()
@@ -540,10 +534,10 @@ class Test(unittest.TestCase):
             clk.cycle(cycles.pop(0))
             self.assertVectorEqual(debuglines['state'], MSP430.STATES['FETCH'])
             res = op(a, carry, 8)
-            self.assertVectorEqual(Vector(debuglines['regs'][5][:8]), Vector(res, 8),
+            self.assertVectorEqual(debuglines['regs'][5][:8], Vector(res, 8),
                               'Result wrong while testing (byte) %s %i: is %s, should be %s' % (instr,
                                                                                                 a, int(
-                                  Vector(debuglines['regs'][5][:8])), res))
+                                  debuglines['regs'][5][:8]), res))
             self.assertVectorEqual(debuglines['regs'][2], Vector(sum(2 ** MSP430.FLAGS_SR_BITS[f] for f in flb), 16),
                               'Flags wrong while testing (byte) %s %i: is %s, should be %s' % (instr,
                                                                                                a, int(

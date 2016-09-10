@@ -372,9 +372,7 @@ class Vector(object):
         self.stack = inspect.currentframe().f_back
         self.func = None
         self.enum = enum
-        if isinstance(value, Vector):
-            self.__dict__ = value.__dict__
-            return
+        assert not isinstance(value, Vector)  # Don't make vectors out of other vectors, just use the riginal vector
         try:
             value = (s for s in value)
         except TypeError:
