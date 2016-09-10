@@ -171,7 +171,7 @@ class Test(unittest.TestCase):
         for a in xrange(-256, 255, 67):
             als = Vector(a, 16)
             bls = TestVector(0, 16)
-            cs = TestSignal(0)
+            cs = TestVector(0, 1)
             sls, c_out = KoggeStoneAdder(als, bls, cs)
             n_ad = calcAreaDelay(als.concat(bls, cs))
             print a, 'Before:', ':', n_ad,
@@ -184,7 +184,7 @@ class Test(unittest.TestCase):
             for b in xrange(-22756, 32767, 1453):
                 for c in xrange(2):
                     bls[:] = b
-                    cs.set(c)
+                    cs[:] = c
                     self.assertVectorEqual(sls, a + b + c)
 
     def test_arith(self):
