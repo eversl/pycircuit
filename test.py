@@ -10,7 +10,8 @@ from MSP430 import CPU, CodeSequence, N, R, B, R_PC, R_SP, R_SR
 from PyCircuit import TestSignal, FullAdder, SRLatch, DLatch, DFlipFlop, \
     intToSignals, signalsToInt, RippleCarryAdder, Vector, Multiplier, \
     Decoder, Memory, ROM, calcAreaDelay, KoggeStoneAdder, \
-    TestVector, DecimalAdder, simplify, Case, DontCare, current_cache, Clock, Register, ConstantSignal, ConstantVector
+    TestVector, DecimalAdder, simplify, Case, DontCare, current_cache, Clock, Register, ConstantSignal, ConstantVector, \
+    VFalse
 
 
 class Test(unittest.TestCase):
@@ -33,7 +34,7 @@ class Test(unittest.TestCase):
     def _test_str(self):
         self.assertEqual(str(TestSignal(0)), 'TestSignal(False)')
         self.assertEqual(str(TestSignal(1)), 'TestSignal(True)')
-        self.assertEqual(str(Vector(-10)), 'Vector(-10, 16)')
+        self.assertEqual(str(ConstantVector(-10)), 'ConstantVector(-10, 16)')
 
     def test_SRLatch(self):
         r = TestSignal()
@@ -103,7 +104,7 @@ class Test(unittest.TestCase):
         signals = FullAdder(a, b, c)
 
         self.assertEqual([sig.value for sig in signals], [False, False])
-        a.set()  # sum should be 1 (sum, carry) 
+        a.set()  # sum should be 1 (sum, carry)
         self.assertEqual([sig.value for sig in signals], [True, False])
         b.set()  # sum = 2
         self.assertEqual([sig.value for sig in signals], [False, True])
@@ -120,22 +121,21 @@ class Test(unittest.TestCase):
         for a in xrange(-256, 255, 67):
             for b in xrange(-22756, 32767, 1453):
                 for c in xrange(2):
-                    als = Vector(a, 16).ls
-                    bls = Vector(b, 16).ls
-                    sls, c_out = RippleCarryAdder(als, bls, ConstantSignal(c))
+                    als = ConstantVector(a, 16)
+                    bls = ConstantVector(b, 16)
+                    sls, c_out = RippleCarryAdder(als, bls, bool(c))
                     self.assertVectorEqual(sls, a + b + c)
-                    self.assertEqual(c_out.value, a < 0)
+                    self.assertVectorEqual(c_out, a < 0)
 
     def test_KoggeStoneAdder(self):
         for a in xrange(-256, 255, 67):
             for b in xrange(-22756, 32767, 1453):
                 for c in xrange(2):
-                    als = Vector(a, 16)
-                    bls = Vector(b, 16)
-                    sls, c_out = KoggeStoneAdder(als, bls, ConstantVector(c, 1))
+                    als = ConstantVector(a, 16)
+                    bls = ConstantVector(b, 16)
+                    sls, c_out = KoggeStoneAdder(als, bls, bool(c))
                     self.assertCurrent(sls)
                     self.assertVectorEqual(sls, a + b + c)
-                    print 'carry', c_out, a < 0
                     self.assertEqual(bool(c_out), a < 0)
 
     def assertCurrent(self, vec):
@@ -144,11 +144,11 @@ class Test(unittest.TestCase):
 
     def test_DecimalAdder(self):
         for a in xrange(0, 10000, 907):
-            d_a = Vector(0, 0).concat(*[Vector(int(d), 4) for d in reversed("%04u" % a)])
+            d_a = Vector.concat(*[ConstantVector(int(d), 4) for d in reversed("%04u" % a)])
             for b in xrange(0, 10000, 359):
-                d_b = Vector(0, 0).concat(*[Vector(int(d), 4) for d in reversed("%04u" % b)])
+                d_b = Vector.concat(*[ConstantVector(int(d), 4) for d in reversed("%04u" % b)])
                 for c in xrange(2):
-                    sls, c_out = DecimalAdder(d_a, d_b, ConstantVector(c, 1))
+                    sls, c_out = DecimalAdder(d_a, d_b, bool(c))
                     self.assertCurrent(sls)
                     sum = int("%x" % sls.concat(c_out).toUint())
                     self.assertEqual(sum, a + b + c, "%i != %i (%i + %i + %i)" % (sum, a + b + c, a, b, c))
@@ -156,8 +156,8 @@ class Test(unittest.TestCase):
     def test_SimplifyConst(self):
         for a in xrange(-256, 255, 67):
             for b in xrange(-22756, 32767, 1453):
-                als = Vector(a, 16)
-                bls = Vector(b, 16)
+                als = ConstantVector(a, 16)
+                bls = ConstantVector(b, 16)
                 sls, c_out = KoggeStoneAdder(als, bls)
                 self.assertCurrent(sls)
                 sls, c_out = simplify(sls, c_out)
@@ -169,7 +169,7 @@ class Test(unittest.TestCase):
 
     def test_Simplify(self):
         for a in xrange(-256, 255, 67):
-            als = Vector(a, 16)
+            als = ConstantVector(a, 16)
             bls = TestVector(0, 16)
             cs = TestVector(0, 1)
             sls, c_out = KoggeStoneAdder(als, bls, cs)
@@ -190,16 +190,16 @@ class Test(unittest.TestCase):
     def test_arith(self):
         self.assertVectorEqual(-TestVector(10), -10)
         self.assertVectorEqual(TestVector(10) + TestVector(-24), 10 + -24)
-        self.assertVectorEqual(Vector(10) - Vector(24), 10 - 24)
-        self.assertVectorEqual(Vector(0x0f) | Vector(0xf0), 0x0f | 0xf0)
-        self.assertVectorEqual(Vector(0x0e) & Vector(0x03), 0x0e & 0x03)
-        self.assertVectorEqual(Vector(0x0e) ^ Vector(0x07), 0x0e ^ 0x07)
-        self.assertVectorEqual(~Vector(0xff), ~0xff)
-        self.assertVectorEqual(abs(Vector(-5)), abs(-5))
+        self.assertVectorEqual(ConstantVector(10) - ConstantVector(24), 10 - 24)
+        self.assertVectorEqual(ConstantVector(0x0f) | ConstantVector(0xf0), 0x0f | 0xf0)
+        self.assertVectorEqual(ConstantVector(0x0e) & ConstantVector(0x03), 0x0e & 0x03)
+        self.assertVectorEqual(ConstantVector(0x0e) ^ ConstantVector(0x07), 0x0e ^ 0x07)
+        self.assertVectorEqual(~ConstantVector(0xff), ~0xff)
+        self.assertVectorEqual(abs(ConstantVector(-5)), abs(-5))
 
     def test_Negate(self):
         for num in xrange(-22756, 32767, 1453):
-            als = Vector(num, 16)
+            als = ConstantVector(num, 16)
             sls = -als
             self.assertVectorEqual(sls, -num)
 
@@ -208,7 +208,7 @@ class Test(unittest.TestCase):
         a = TestVector(255, bitlen)
         b = TestVector(255, bitlen)
         m = Multiplier(a, b, False)
-        print calcAreaDelay(a[:] + b[:])
+        print calcAreaDelay(Vector.concat(a, b))
         self.assertEqual(len(m), bitlen * 2)
         for av in xrange(2, 2 ** bitlen, 23):
             a[:] = av
@@ -228,7 +228,7 @@ class Test(unittest.TestCase):
         SZ = 10
         a = TestVector(0, SZ)
         d = TestVector(0, 16)
-        mem_wr = TestVector([False])
+        mem_wr = TestVector(0, 1)
         q = Memory(clk, a, d, mem_wr)
         self.assertCurrent(q)
         print calcAreaDelay(a.concat(d).concat(mem_wr))
@@ -253,7 +253,7 @@ class Test(unittest.TestCase):
         size = 10
         a = TestVector(0, size)
         d = TestVector(0, 16)
-        mem_wr = Vector(False)
+        mem_wr = VFalse
         q = ROM(clk, a, d, mem_wr, range(2 ** size))
         self.assertCurrent(q)
         print calcAreaDelay(a)
@@ -264,7 +264,7 @@ class Test(unittest.TestCase):
         (q,) = simplify(q)
         print calcAreaDelay(a)
 
-    def test_AdderDelay(self):
+    def _test_AdderDelay(self):
         for bitlen in xrange(2, 65):
             a = TestVector(-1, bitlen)
             b = TestVector(-1, bitlen)
@@ -283,8 +283,8 @@ class Test(unittest.TestCase):
 
     def test_DontCare(self):
         v = TestVector(0, 4)
-        res = Case(v, {(Vector(1, 4), Vector(6, 4), Vector(8, 4)): Vector(13),
-                       (Vector(0, 4), Vector(3, 4), Vector(5, 4)): Vector(100)})
+        res = Case(v, {(ConstantVector(1, 4), ConstantVector(6, 4), ConstantVector(8, 4)): ConstantVector(13),
+                       (ConstantVector(0, 4), ConstantVector(3, 4), ConstantVector(5, 4)): ConstantVector(100)})
         self.assertVectorEqual(res, 100)
         v[:] = 1
         self.assertVectorEqual(res, 13)
@@ -376,17 +376,17 @@ class Test(unittest.TestCase):
 
         CPU_state = {k: debuglines[k] for k in ['state', 'instr']}
         clk.cycle(d1, CPU_state)  # MOV(N(2**10), R(4))
-        self.assertVectorEqual(debuglines['regs'][4], Vector(2 ** 10, 16))
+        self.assertVectorEqual(debuglines['regs'][4], ConstantVector(2 ** 10, 16))
         clk.cycle(d2, CPU_state)  # MOV(N(2**6), R(4), B)
-        self.assertVectorEqual(debuglines['regs'][4], Vector(2 ** 6, 16))
+        self.assertVectorEqual(debuglines['regs'][4], ConstantVector(2 ** 6, 16))
         clk.cycle(d3, CPU_state)  # MOV(R(4), R(5))
-        self.assertVectorEqual(debuglines['regs'][5], Vector(2 ** 6, 16))
+        self.assertVectorEqual(debuglines['regs'][5], ConstantVector(2 ** 6, 16))
         clk.cycle(d4, CPU_state)  # MOV(N(2 ** 8), +N(2 ** 16 - 4))
         clk.cycle(d5, CPU_state)  # MOV(+N(2 ** 16 - 4), +N(2 ** 16 - 6))
         clk.cycle(d6, CPU_state)  # MOV(+N(2 ** 16 - 4), R(6))
-        self.assertVectorEqual(debuglines['regs'][6], Vector(2 ** 8, 16))
+        self.assertVectorEqual(debuglines['regs'][6], ConstantVector(2 ** 8, 16))
         clk.cycle(d7, CPU_state)  # MOV(+N(2**6 - 6), R(7))
-        self.assertVectorEqual(debuglines['regs'][7], Vector(2 ** 8, 16))
+        self.assertVectorEqual(debuglines['regs'][7], ConstantVector(2 ** 8, 16))
 
     def two_arg_alu(self, instr, op, test_seq):
         # first test just the ALU
@@ -519,11 +519,12 @@ class Test(unittest.TestCase):
             clk.cycle(cycles.pop(0))
             self.assertVectorEqual(debuglines['state'], MSP430.STATES['FETCH'])
             res = op(a, carry, 16)
-            self.assertVectorEqual(debuglines['regs'][4], Vector(res, 16),
+            self.assertVectorEqual(debuglines['regs'][4], ConstantVector(res, 16),
                               'Result wrong while testing %s %i: is %s, should be %s' % (instr, a,
                                                                                          int(debuglines['regs'][4]),
                                                                                          res))
-            self.assertVectorEqual(debuglines['regs'][2], Vector(sum(2 ** MSP430.FLAGS_SR_BITS[f] for f in fl), 16),
+            self.assertVectorEqual(debuglines['regs'][2],
+                                   ConstantVector(sum(2 ** MSP430.FLAGS_SR_BITS[f] for f in fl), 16),
                               'Flags wrong while testing %s %i: is %s, should be %s' % (instr, a,
                                                                                         int(debuglines['regs'][2]),
                                                                                         sum(2 **
@@ -534,11 +535,12 @@ class Test(unittest.TestCase):
             clk.cycle(cycles.pop(0))
             self.assertVectorEqual(debuglines['state'], MSP430.STATES['FETCH'])
             res = op(a, carry, 8)
-            self.assertVectorEqual(debuglines['regs'][5][:8], Vector(res, 8),
+            self.assertVectorEqual(debuglines['regs'][5][:8], ConstantVector(res, 8),
                               'Result wrong while testing (byte) %s %i: is %s, should be %s' % (instr,
                                                                                                 a, int(
                                   debuglines['regs'][5][:8]), res))
-            self.assertVectorEqual(debuglines['regs'][2], Vector(sum(2 ** MSP430.FLAGS_SR_BITS[f] for f in flb), 16),
+            self.assertVectorEqual(debuglines['regs'][2],
+                                   ConstantVector(sum(2 ** MSP430.FLAGS_SR_BITS[f] for f in flb), 16),
                               'Flags wrong while testing (byte) %s %i: is %s, should be %s' % (instr,
                                                                                                a, int(
                                   debuglines['regs'][2]), sum(2 ** MSP430.FLAGS_SR_BITS[f] for f in flb)))
@@ -570,7 +572,7 @@ class Test(unittest.TestCase):
         debuglines = CPU(cs.code, clk)
         clk.cycle(d1, debuglines)
         clk.cycle(d2, debuglines)
-        self.assertVectorEqual(debuglines['regs'][4], Vector(v / 2, 16))
+        self.assertVectorEqual(debuglines['regs'][4], ConstantVector(v / 2, 16))
         clk.cycle(d3)
         clk.cycle(d4)
         clk.cycle(d5)
@@ -578,11 +580,11 @@ class Test(unittest.TestCase):
         clk.cycle(d7, debuglines)
         clk.cycle(d8, debuglines)
         clk.cycle(d9, debuglines)
-        self.assertVectorEqual(debuglines['regs'][4], Vector(v / 2, 16))
+        self.assertVectorEqual(debuglines['regs'][4], ConstantVector(v / 2, 16))
         self.assertCurrent(debuglines['regs'][4])
-        self.assertVectorEqual(debuglines['regs'][5], Vector(v / 4, 16))
-        self.assertVectorEqual(debuglines['regs'][6], Vector(v / 8, 16))
-        self.assertVectorEqual(debuglines['regs'][7], Vector(v / 16, 16))
+        self.assertVectorEqual(debuglines['regs'][5], ConstantVector(v / 4, 16))
+        self.assertVectorEqual(debuglines['regs'][6], ConstantVector(v / 8, 16))
+        self.assertVectorEqual(debuglines['regs'][7], ConstantVector(v / 16, 16))
 
     def test_PUSH(self):
         clk = Clock()
@@ -597,18 +599,18 @@ class Test(unittest.TestCase):
 
         debuglines = CPU(cs.code, clk)
         clk.cycle(d0)
-        self.assertVectorEqual(debuglines['regs'][1], Vector(-2, 16))
+        self.assertVectorEqual(debuglines['regs'][1], ConstantVector(-2, 16))
         clk.cycle(d1)
-        self.assertVectorEqual(debuglines['regs'][1], Vector(-4, 16))
+        self.assertVectorEqual(debuglines['regs'][1], ConstantVector(-4, 16))
         clk.cycle(d2)
-        self.assertVectorEqual(debuglines['regs'][4], Vector(-2, 16))
+        self.assertVectorEqual(debuglines['regs'][4], ConstantVector(-2, 16))
         clk.cycle(d3)
-        self.assertVectorEqual(debuglines['regs'][1], Vector(-6, 16))
+        self.assertVectorEqual(debuglines['regs'][1], ConstantVector(-6, 16))
         clk.cycle(d4)
-        self.assertVectorEqual(debuglines['regs'][4], Vector(255, 16))
+        self.assertVectorEqual(debuglines['regs'][4], ConstantVector(255, 16))
         clk.cycle(d5)
         clk.cycle(d6)
-        self.assertVectorEqual(debuglines['regs'][4], Vector(16676, 16))
+        self.assertVectorEqual(debuglines['regs'][4], ConstantVector(16676, 16))
 
     def test_RETI(self):
         clk = Clock()
@@ -622,16 +624,16 @@ class Test(unittest.TestCase):
 
         debuglines = CPU(cs.code, clk)
         clk.cycle(d0)
-        self.assertVectorEqual(debuglines['regs'][R_SP], Vector(-2, 16))
+        self.assertVectorEqual(debuglines['regs'][R_SP], ConstantVector(-2, 16))
         clk.cycle(d1)
-        self.assertVectorEqual(debuglines['regs'][R_SR], Vector(8, 16))
+        self.assertVectorEqual(debuglines['regs'][R_SR], ConstantVector(8, 16))
         clk.cycle(d2)
         clk.cycle(d3)
         clk.cycle(d4)
-        self.assertVectorEqual(debuglines['regs'][R_SR], Vector(0, 16))
+        self.assertVectorEqual(debuglines['regs'][R_SR], ConstantVector(0, 16))
         clk.cycle(d5, debuglines)
-        self.assertVectorEqual(debuglines['regs'][R_SR], Vector(8, 16))
-        self.assertVectorEqual(debuglines['regs'][R_PC], Vector((s0 + s1) * 2, 16))
+        self.assertVectorEqual(debuglines['regs'][R_SR], ConstantVector(8, 16))
+        self.assertVectorEqual(debuglines['regs'][R_PC], ConstantVector((s0 + s1) * 2, 16))
 
     def test_BRANCH(self):
         clk = Clock()
@@ -731,7 +733,7 @@ class Test(unittest.TestCase):
     def test_currentRegisters(self):
         clk = Clock()
         r = Register(clk, 1, 2)
-        res, c = KoggeStoneAdder(r, Vector(1, 2))
+        res, c = KoggeStoneAdder(r, ConstantVector(1, 2))
         r.connect(res)
         for _ in range(8):
             s = res.current()
@@ -740,7 +742,7 @@ class Test(unittest.TestCase):
             clk.cycle()
             self.assertEqual(r.current(), s)
 
-    def test_SimplifyCPU(self):
+    def _test_SimplifyCPU(self):
         clk = Clock()
         cs = CodeSequence()
         debuglines = CPU(cs.code, clk)
@@ -752,31 +754,6 @@ class Test(unittest.TestCase):
         simplify(mem_out)
         print before, calcAreaDelay(mem_out.ls)
 
-        # addr = TestVector(0, 3)
-        # data = TestVector(0, 8)
-        # isWrite = TestVector(0, 1)
-        # data_in = Memory(clk, addr, data, isWrite)
-        # before = calcAreaDelay(addr.ls)
-        # (data_in,) = simplify(data_in)
-        # print before, calcAreaDelay(addr.ls)
-
-
-        # clk = ClockSignal()
-        # src_reg = TestVector(0, 4)
-        # dst_reg = TestVector(0, 4)
-        # src_incr = TestSignal()
-        # src_mode = TestVector(0, 2)
-        # dst_in = TestVector(0, 16)
-        # sr_in = TestVector(0, 16)
-        # dst_wr = TestSignal()
-        # bw = TestVector(0, 1)
-        # pc_incr = TestSignal()
-        # src_out, dst_out, regs, src_incr_val = MSP430.RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode,
-        #                                                            dst_in, sr_in,
-        #                                                            dst_wr, bw,
-        #                                                            clk)
-        #
-        # src_out, dst_out, regs, src_incr_val = simplify(src_out, dst_out, regs, src_incr_val)
 
 if __name__ == "__main__":
     # import sys;sys.argv = ['', 'Test.testName']

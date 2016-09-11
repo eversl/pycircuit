@@ -4,7 +4,7 @@ Created on Mar 21, 2014
 @author: leonevers
 '''
 from PyCircuit import Vector, Memory, Decoder, FeedbackVector, If, zip_all, Or, calcAreaDelay, \
-    Enum, Case, TrueInCase, Register, KoggeStoneAdder, DecimalAdder
+    Enum, Case, TrueInCase, Register, KoggeStoneAdder, DecimalAdder, ConstantVector, VFalse, VTrue
 
 
 def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, dst_wr, bw, clk):
@@ -28,17 +28,18 @@ def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, d
                 zip_all(reg_sizes, src_incr_lines.prev, dst_wr_lines.prev, registers)]
 
     for reg, reg_val in zip_all(registers, [
-        If(pc_incr, out[16 - sz:] + Vector(1, 15), out[16 - sz:]) if out is out_vals[0] else
+        If(pc_incr, out[16 - sz:] + ConstantVector(1, 15), out[16 - sz:]) if out is out_vals[0] else
         If(dst_wr & ~dst_lines[2], sr_in, out[16 - sz:]) if out is out_vals[2] else
         out[16 - sz:] for sz, out in zip_all(reg_sizes, out_vals)]):
         reg.connect(reg_val)
 
-    cg_out_vals = [Case(src_mode, {SRC_M['M_INDEX']: Vector(0, 16),
-                                   SRC_M['M_INDIRECT']: Vector(4, 16),
-                                   SRC_M['M_INCR']: Vector(8, 16)}, out) if out is out_vals[2]
-                   else Case(src_mode, {SRC_M['M_INDEX']: Vector(1, 16),
-                                        SRC_M['M_INDIRECT']: Vector(2, 16),
-                                        SRC_M['M_INCR']: Vector(-1, 16)}, Vector(0, 16)) if out is out_vals[3]
+    cg_out_vals = [Case(src_mode, {SRC_M['M_INDEX']: ConstantVector(0, 16),
+                                   SRC_M['M_INDIRECT']: ConstantVector(4, 16),
+                                   SRC_M['M_INCR']: ConstantVector(8, 16)}, out) if out is out_vals[2]
+                   else Case(src_mode, {SRC_M['M_INDEX']: ConstantVector(1, 16),
+                                        SRC_M['M_INDIRECT']: ConstantVector(2, 16),
+                                        SRC_M['M_INCR']: ConstantVector(-1, 16)}, ConstantVector(0, 16)) if out is
+                                                                                                            out_vals[3]
     else out for out in out_vals]
 
     src_out = Vector.concat(*(Vector.concat(*l).reduce(Or)
@@ -46,7 +47,8 @@ def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, d
     dst_out = Vector.concat(*(Vector.concat(*l).reduce(Or)
                               for l in zip(*(dst_line & q_out for dst_line, q_out in zip_all(dst_lines, out_vals)))))
 
-    src_incr_val.connect(src_out + If(~ bw[0] | src_lines[0] | src_lines[1], Vector(2, 16), Vector(1, 16)))
+    src_incr_val.connect(
+        src_out + If(~ bw[0] | src_lines[0] | src_lines[1], ConstantVector(2, 16), ConstantVector(1, 16)))
     return src_out, dst_out, out_vals, src_incr_val.prev
 
 
@@ -63,7 +65,7 @@ def decodeInstr(word):
     instr = If(word[15] | (~word[15] & word[14]), word[12:].extendBy(1),
                If(word[13], word[10:13].concat(I_TYPES['IT_JUMP']),
                   word[7:10].concat(I_TYPES['IT_ONE']))).makeEnum(INSTRS)
-    dst_reg = Case(inst_type, {I_TYPES['IT_JUMP']: Vector(0, 4)}, word[0:4])
+    dst_reg = Case(inst_type, {I_TYPES['IT_JUMP']: ConstantVector(0, 4)}, word[0:4])
     src_reg = Case(inst_type, {I_TYPES['IT_TWO']: word[8:12],
                                I_TYPES['IT_ONE']: dst_reg})
     bw = Case(inst_type, {I_TYPES['IT_JUMP']: BYTE_WORD['WORD']},
@@ -388,7 +390,7 @@ def alu(instr, src, dst_in, flags_in, bw):
         n_out = out[-1]  # negative equals sign bit
         c_out = out.reduce(Or)
         z_out = ~c_out
-        v_out = Vector(0, 1)
+        v_out = ConstantVector(0, 1)
         flags = {'c': c_out, 'n': n_out, 'z': z_out, 'v': v_out}
         flags.update(flags_upd)
         return out, flags
@@ -448,7 +450,7 @@ def alu(instr, src, dst_in, flags_in, bw):
              INSTRS['CMP']):
                 calc_alu(do_add_sub, src, dst_in,
                          Case(instr,
-                              {(INSTRS['ADD'], INSTRS['SUB'], INSTRS['CMP']): Vector(0, 1),
+                              {(INSTRS['ADD'], INSTRS['SUB'], INSTRS['CMP']): VFalse,
                                (INSTRS['ADDC'], INSTRS['SUBC']): c_in}),
                          instr),
             INSTRS['BIC']: calc_alu(do_bic, src, dst_in),
@@ -465,13 +467,13 @@ def alu(instr, src, dst_in, flags_in, bw):
             INSTRS['SXT']: calc_alu(do_sxt, src),
             (INSTRS['JNZ'], INSTRS['JZ'], INSTRS['JNC'], INSTRS['JC'],
              INSTRS['JN'], INSTRS['JGE'], INSTRS['JL'], INSTRS['JMP']):
-                calc_alu(do_jmp, src, dst_in)}, (Vector(0, len(dst_in)), {k: Vector(0, 1) for k in FLAGS}))
+                calc_alu(do_jmp, src, dst_in)}, (ConstantVector(0, len(dst_in)), {k: VFalse for k in FLAGS}))
         return Case(instr, {(INSTRS['CMP'], INSTRS['BIT']): dst_in}, dst_out), flags_out
 
     dst_out, flags_out = Case(bw, {
         BYTE_WORD['BYTE']: (lambda dst_out, flags_out: (dst_out[:8].concat(dst_in[8:]), flags_out))(
             *op(src[:8], dst_in[:8])),
-        BYTE_WORD['WORD']: op(src, dst_in)}, (Vector(0, len(dst_in)), {k: Vector(0, 1) for k in FLAGS}))
+        BYTE_WORD['WORD']: op(src, dst_in)}, (ConstantVector(0, len(dst_in)), {k: VFalse for k in FLAGS}))
 
     return dst_out, flags_out
 
@@ -528,11 +530,12 @@ def CPU(mem_init, clk):
                                                                    (SRC_M['M_INDEX'], SRC_M['M_INDIRECT'],
                                                                     SRC_M['M_INCR']):
                                                                        TrueInCase(src_reg,
-                                                                                  {(Vector(2, 4), Vector(3, 4)):
+                                                                                  {(ConstantVector(2, 4),
+                                                                                    ConstantVector(3, 4)):
                                                                                        TrueInCase(a_d, DST_M[
                                                                                            'M_DIRECT'])})}),
                                                            I_TYPES['IT_ONE']: TrueInCase(a_s, SRC_M['M_DIRECT'])},
-                                               Vector(0, 1)),
+                                               VFalse),
                                       ('SRC_INDIRECT', 'SRC_INCR', 'SRC_GET'):
                                           TrueInCase(inst_type,
                                                      {I_TYPES['IT_TWO']: TrueInCase(a_d, DST_M['M_DIRECT'])}),
@@ -543,7 +546,7 @@ def CPU(mem_init, clk):
              TrueInCase(instr, {'PUSH': TrueInCase(state.prev, ('PUSH',)),
                                 'CALL': TrueInCase(state.prev, ('CALL1', 'CALL2')),
                                 'RETI': TrueInCase(state.prev, ('RETI1', 'RETI2')),
-                                'JMP': Vector(1, 1),
+                                'JMP': VTrue,
                                 'JNZ': ~flags_in['z'],
                                 'JZ': flags_in['z'],
                                 'JNC': ~flags_in['c'],
@@ -556,10 +559,10 @@ def CPU(mem_init, clk):
     pc_incr = TrueInCase(state.prev, ('FETCH', 'SRC_IDX', 'DST_IDX'))
     src_out, dst_out, regs, src_incr = \
         RegisterFile(pc_incr=pc_incr,
-                     src_reg=Case(instr, {'RETI': Vector(R_SP, 4)}, src_reg),
-                     dst_reg=Case(state.prev, {('PUSH', 'CALL1'): Vector(R_SP, 4),
-                                               ('RETI1',): Vector(R_SR, 4),
-                                               ('CALL2', 'RETI2'): Vector(R_PC, 4)}, dst_reg),
+                     src_reg=Case(instr, {'RETI': ConstantVector(R_SP, 4)}, src_reg),
+                     dst_reg=Case(state.prev, {('PUSH', 'CALL1'): ConstantVector(R_SP, 4),
+                                               ('RETI1',): ConstantVector(R_SR, 4),
+                                               ('CALL2', 'RETI2'): ConstantVector(R_PC, 4)}, dst_reg),
                      src_incr=TrueInCase(state.prev, ('SRC_INCR', 'RETI1', 'RETI2')),
                      src_mode=a_s,
                      dst_in=Case(inst_bw,
@@ -571,7 +574,7 @@ def CPU(mem_init, clk):
                      clk=clk)
     feedback_src_out.connect(src_out)
     pc_reg.connect(regs[0])
-    sp_reg.connect(regs[1] + Vector(-2))
+    sp_reg.connect(regs[1] + ConstantVector(-2, 16))
     sr_reg.connect(regs[2])
 
     idx_addr.ccase(state.prev, {'SRC_IDX': src_out + mem_out,
@@ -605,7 +608,7 @@ def CPU(mem_init, clk):
 
     status_reg_out = Vector.concat(*(flag_for_bit(n, b) for n, b in enumerate(regs[2])))
 
-    prev_mem_in.ccase(instr, {INSTRS['CALL']: pc_reg + Vector(2, 16)},
+    prev_mem_in.ccase(instr, {INSTRS['CALL']: pc_reg + ConstantVector(2, 16)},
                       Case(inst_bw,
                            {BYTE_WORD['BYTE']: If(mem_addr[0], alu_out[8:].concat(alu_out[:8]), dst_in),
                             BYTE_WORD['WORD']: alu_out}))
@@ -620,17 +623,17 @@ def CPU(mem_init, clk):
                                                            Case(a_s, {SRC_M['M_DIRECT']: next_dst_state,
                                                                       SRC_M['M_INCR']:
                                                                           Case(src_reg, {
-                                                                              (Vector(2, 4),
-                                                                               Vector(3, 4)): next_dst_state},
+                                                                              (ConstantVector(2, 4),
+                                                                               ConstantVector(3, 4)): next_dst_state},
                                                                                STATES['SRC_INCR']),
                                                                       SRC_M['M_INDIRECT']:
                                                                           Case(src_reg, {
-                                                                              (Vector(2, 4),
-                                                                               Vector(3, 4)): next_dst_state},
+                                                                              (ConstantVector(2, 4),
+                                                                               ConstantVector(3, 4)): next_dst_state},
                                                                                STATES['SRC_INDIRECT']),
                                                                       SRC_M['M_INDEX']:
                                                                           Case(src_reg,
-                                                                               {Vector(3, 4): next_dst_state},
+                                                                               {ConstantVector(3, 4): next_dst_state},
                                                                                STATES['SRC_IDX'])}),
                                                        'IT_ONE':
                                                            Case(a_s, {SRC_M['M_DIRECT']:
