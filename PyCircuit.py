@@ -4,6 +4,7 @@ Created on Feb 4, 2014
 @author: leone
 '''
 import inspect
+import itertools
 from collections import Counter
 from operator import __and__, __xor__, __or__, __invert__
 
@@ -35,9 +36,9 @@ def monitor(val):
 def printMonitored():
     print "{:>8d}:  {}".format(sim_steps,
                                "".join(("{:^16}".format([k for k in v.enum if int(v.enum[k]) == int(v)])
-                                        if v.enum else "{:^8}".format(signalsToInt(v.ls)))
+                                        if v.enum else "{:^18}".format(v.toUint()))
                                        if isinstance(v, Vector) else
-                                       "".join("-" if s.value else "_" for s in v)
+                                       "".join("D" if type(s.value) is DontCare else "-" if s.value else "_" for s in v)
                                        for v in monitoredVectors))
 
 
@@ -125,11 +126,15 @@ current_cache = {}
 
 
 def intToBits(num, bits):
-    return (((num >> i) & 1) == 1 for i in xrange(bits))
+    return (((num >> i) & 1) for i in xrange(bits))
 
 
 def intToSignals(num, bits):
     return [ConstantSignal(b) for b in intToBits(num, bits)]
+
+
+def DontCareToBits(dc, bits):
+    return (DontCareBool if ((dc.mask >> i) & 1) == 1 else ((dc.val >> i) & 1) == 1 for i in xrange(bits))
 
 
 def signalsToInt(ls, signed=True):
@@ -142,6 +147,27 @@ def signalsToInt(ls, signed=True):
         num = sum(1 << i for i, v in enumerate(ls) if type(v.value) is not DontCare and v.value)
         return DontCare(num, mask)
     return num
+
+
+def evalDontCare(self, args):
+    argvals = []
+    for a in args:
+        if type(a) is DontCare:
+            bits = [b for b in
+                    itertools.takewhile(lambda x: x <= a.mask, itertools.imap(lambda x: 1 << x, itertools.count()))
+                    if b & a.mask]
+            aval = (a.val & ~a.mask)
+            argvals.append(list(itertools.imap(lambda x: aval | sum(itertools.compress(bits, x)),
+                                               itertools.product([0, 1], repeat=len(bits)))))
+        else:
+            argvals.append([a])
+
+    def r((pv, pm), (qv, qm)):
+        return (pv & qv), (pv ^ qv) | pm
+
+    v, m = reduce(r, ((self.func(*av), 0) for av in itertools.product(*argvals)))
+    val = v if m == 0 else DontCare(v, m)
+    return val
 
 
 class Signal(object):
@@ -182,10 +208,17 @@ class Signal(object):
     def eval(self):
         try:
             value = self.func(*(arg.value for arg in self.args))
+            if any(isinstance(arg.value, DontCare) for arg in self.args):
+                ev_value = evalDontCare(self, (a.value for a in self.args))
+                if value != ev_value:
+                    value = self.func(*(arg.value for arg in self.args))
+                    ev_value = evalDontCare(self, (a.value for a in self.args))
+                    assert value == ev_value
         except TypeError:
+            assert False
             valueTrue = self.func(*(True if type(arg.value) is DontCare else arg.value for arg in self.args))
             valueFalse = self.func(*(False if type(arg.value) is DontCare else arg.value for arg in self.args))
-            value = valueTrue if valueTrue == valueFalse else DontCare()
+            value = valueTrue if valueTrue == valueFalse else DontCareBool
         if self.value == value:
             return []
         else:
@@ -342,10 +375,7 @@ class Vector(object):
             return '{0}({1})'.format(type(self).__name__,
                                      ([k for k in self.enum if int(self.enum[k]) == int(self)] or ['?'])[0])
         else:
-            try:
-                val = signalsToInt(self.ls)
-            except TypeError:
-                val = DontCare()
+            val = self.toUint()
             return '{0}({1}, {2})'.format(type(self).__name__, val, len(self))
 
     def __len__(self):
@@ -483,8 +513,13 @@ class Vector(object):
     def dup(self, n):
         def current_func(num):
             def inner(sigv):
-                res = (1 << num) - 1 if (sigv & 1) else 0
-                return res
+                dupbits = (1 << num) - 1
+                if isinstance(sigv, DontCare):
+                    if sigv.mask & 1:
+                        return DontCare(0, dupbits)
+                    else:
+                        return 0
+                return dupbits if (sigv & 1) else 0
 
             return inner
 
@@ -515,8 +550,10 @@ class Vector(object):
         return CircuitVector(signals, func=current_func, args=args)
 
     def checkEqual(self, val):
-        if type(val) is not DontCare and val != signalsToInt(self.ls, False):
-            print self, "current result", val, "not equal to", signalsToInt(self.ls, False)
+        if val != self.toUint():
+            print "Current result", val, "not equal to", self.toUint()
+            current_cache.clear()
+            print self.current()
             stack = self.stack
             for _ in range(6):
                 print 'File "{0}", line {1}, in {2}'.format(stack.f_code.co_filename, stack.f_lineno,
@@ -560,25 +597,22 @@ class CircuitVector(Vector):
         try:
             val = self.func(*args)
         except TypeError as e:
-            valTrue = self.func(*[a.val | a.mask if type(a) is DontCare else a for a in args])
-            valFalse = self.func(*[a.val & ~a.mask if type(a) is DontCare else a for a in args])
-            val = valTrue & (1 << len(self)) - 1 if valTrue == valFalse else \
-                DontCare(valTrue & valFalse, valTrue ^ valFalse)
+            val = evalDontCare(self, args)
 
-        current_cache[id(self)] = val
-        assert isinstance(val, DontCare) or val & ((1 << len(self.ls)) - 1) == val, (
-            val, len(self.ls), inspect.getsourcelines(self.func))
         self.checkEqual(val)
+        current_cache[id(self)] = val
         return val
 
 
 class ValueVector(Vector):
     def __init__(self, value, ls):
         Vector.__init__(self, ls)
-        self.const = int(value) & (1 << len(ls)) - 1
+        try:
+            self.const = int(value) & (1 << len(ls)) - 1
+        except TypeError:
+            self.const = value
 
     def current(self):
-        assert self.const & ((1 << len(self.ls)) - 1) == self.const, (self.const, len(self.ls))
         return self.const
 
 
@@ -610,11 +644,16 @@ class TestVector(ValueVector):
             signals = self.ls[key]
         if isinstance(value, int):
             bits = intToBits(value, len(signals))
+        elif isinstance(value, DontCare):
+            bits = DontCareToBits(value, len(signals))
         else:
             bits = value
         for b, s in zip(bits, signals):
             s.value = b.value if isinstance(b, Signal) else b
-        self.const = int(value) & (1 << len(signals)) - 1
+        try:
+            self.const = int(value) & (1 << len(signals)) - 1
+        except TypeError:
+            self.const = value
         simulate(signals)
 
 
@@ -625,14 +664,13 @@ class Clock(TestVector):
 
     def cycle(self, n=1, CPU_state=None):
         for _ in xrange(n):
+
             newvals = [(r, r.next.current()) for e, r in enumerate(self.registers)]
             self[:] = 1
             self[:] = 0
             current_cache.clear()
             for r, v in newvals:
                 r.const = v
-            for nn, (r, v) in enumerate(newvals):
-                # print nn, r.name, v
                 assert r.current() == v
 
             if CPU_state is not None:
@@ -679,24 +717,82 @@ class FeedbackVector(Vector):
 
 
 class DontCare(object):
-    def __init__(self, val=0, mask=-1):
+    def __init__(self, val=False, mask=1):
         self.val = val
         self.mask = mask
 
+    def __nonzero__(self):
+        assert self.mask == 1
+        return DontCareBool
+
     def __eq__(self, other):
-        return type(self) == type(other)
+        return type(self) == type(other) and self.val == other.val and self.mask == other.mask
 
     def __ne__(self, other):
         return not self.__eq__(other)
 
+    def __and__(self, other):
+        if isinstance(other, DontCare):
+            new_val = self.val & other.val
+            new_mask = (self.val | self.mask) & (other.val | other.mask) & ~new_val
+        else:
+            new_val = self.val & other
+            new_mask = self.mask & other
+        if new_mask:
+            return DontCare(new_val, new_mask)
+        else:
+            return new_val
+
+    def __rand__(self, other):
+        return self.__and__(other)
+
+    def __or__(self, other):
+        if isinstance(other, DontCare):
+            new_val = self.val | other.val
+            new_mask = (self.mask | other.mask) & ~(self.val | other.val)
+        else:
+            new_val = self.val | other
+            new_mask = self.mask & ~other
+        if new_mask:
+            return DontCare(new_val, new_mask)
+        else:
+            return new_val
+
+    def __ror__(self, other):
+        return self.__or__(other)
+
+    def __xor__(self, other):
+        if isinstance(other, DontCare):
+            new_mask = self.mask | other.mask
+            new_val = (self.val ^ other.val) & ~new_mask
+        else:
+            new_mask = self.mask
+            new_val = (self.val ^ other) & ~new_mask
+        return DontCare(new_val, new_mask)
+
+    def __rxor__(self, other):
+        return self.__xor__(other)
+
+    def __invert__(self):
+        return DontCare(~(self.val | self.mask), self.mask)
+
+    def __lshift__(self, other):
+        return DontCare(self.val << other, self.mask << other)
+
+    def __rshift__(self, other):
+        return DontCare(self.val >> other, self.mask >> other)
+
     def __repr__(self):
-        return "DontCare"
+        return "DontCare(" + str(self.val) + ", " + str(self.mask) + ")"
+
+
+DontCareBool = DontCare(False, 1)
 
 
 class DontCareSignal(ConstantSignal):
     def __init__(self):
         ConstantSignal.__init__(self)
-        self.value = DontCare()
+        self.value = DontCareBool
 
     def __repr__(self):
         return '{0}()'.format(type(self).__name__)
@@ -705,17 +801,24 @@ class DontCareSignal(ConstantSignal):
 DontCareSig = DontCareSignal()
 
 
-class DontCareVector(Vector):
+class ConstantVector(ValueVector):
+    def __init__(self, value, bits=16, enum=None):
+        ls = [ConstantSignal(b) for b in intToBits(int(value), bits)]
+        ValueVector.__init__(self, value, ls)
+        if enum:
+            self.makeEnum(enum)
+
+
+class DontCareVector(ValueVector):
     def __init__(self, bits=16):
-        Vector.__init__(self, [DontCareSig] * bits)
+        ls = [DontCareSig] * bits
+        mask = (1 << bits) - 1
+        value = DontCare(False, mask)
+        ValueVector.__init__(self, value, ls)
 
     def __repr__(self):
         return "DontCareVector({0})".format(len(self.ls))
 
-    def current(self):
-        mask = (1 << len(self.ls)) - 1
-        val = DontCare(0, mask)
-        return val
 
 
 class CircuitOper(Signal):
@@ -788,12 +891,19 @@ class Xor(CircuitOper):
 
 class Not(CircuitOper):
     def func(self, a):
-        return not a
+        if isinstance(a, DontCare):
+            return DontCareBool
+        else:
+            return not a
 
 
 class Nor(CircuitOper):
-    def func(self, a, b):
-        return not (a | b)
+    def func(self, *a):
+        or_val = reduce(lambda p, q: p | q, a)
+        if isinstance(or_val, DontCare):
+            return DontCareBool
+        else:
+            return not or_val
 
 
 class Enum(object):

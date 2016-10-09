@@ -11,7 +11,7 @@ from PyCircuit import TestSignal, FullAdder, SRLatch, DLatch, DFlipFlop, \
     intToSignals, signalsToInt, RippleCarryAdder, Vector, Multiplier, \
     Decoder, Memory, ROM, calcAreaDelay, KoggeStoneAdder, \
     TestVector, DecimalAdder, simplify, Case, DontCare, current_cache, Clock, Register, ConstantSignal, ConstantVector, \
-    VFalse
+    VFalse, monitor
 
 
 class Test(unittest.TestCase):
@@ -754,6 +754,16 @@ class Test(unittest.TestCase):
         simplify(mem_out)
         print before, calcAreaDelay(mem_out.ls)
 
+    def test_DontCareDecoder(self):
+        a = TestVector(0, 4)
+        monitor(a)
+        d = Decoder(a)
+        monitor(d.ls)
+        for m in xrange(2 ** 4):
+            for i in xrange(2 ** 4):
+                a[:] = DontCare(i, m)
+                # self.assertVectorEqual(d, 2 ** i)
+                self.assertCurrent(d)
 
 if __name__ == "__main__":
     # import sys;sys.argv = ['', 'Test.testName']
