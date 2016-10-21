@@ -3,8 +3,8 @@ Created on Mar 21, 2014
 
 @author: leonevers
 '''
-from PyCircuit import Vector, Memory, Decoder, FeedbackVector, If, zip_all, Or, calcAreaDelay, \
-    Enum, Case, TrueInCase, Register, KoggeStoneAdder, DecimalAdder, ConstantVector, VFalse, VTrue
+from PyCircuit import Vector, Memory, Decoder, FeedbackVector, If, zip_all, Or, Enum, Case, TrueInCase, Register, \
+    KoggeStoneAdder, DecimalAdder, ConstantVector, VFalse, VTrue
 
 
 def RegisterFile(pc_incr, src_reg, dst_reg, src_incr, src_mode, dst_in, sr_in, dst_wr, bw, clk):
@@ -69,7 +69,7 @@ def decodeInstr(word):
     src_reg = Case(inst_type, {I_TYPES['IT_TWO']: word[8:12],
                                I_TYPES['IT_ONE']: dst_reg})
     bw = Case(inst_type, {I_TYPES['IT_JUMP']: BYTE_WORD['WORD']},
-              word[6].makeEnum(BYTE_WORD))
+              word[6]).makeEnum(BYTE_WORD)
     a_s = word[4:6].makeEnum(SRC_M)
     a_d = word[7].makeEnum(DST_M)
     offset = word[:10]
@@ -238,7 +238,7 @@ class CodeSequence(object):
     def CLRZ(self):
         return self.BIC(N(1 << FLAGS_SR_BITS['z']), R(2))
 
-    # Add carry decimally to destination
+    # Decimally add carry to destination
     def DADC(self, dst, b):
         return self.ADDC(N(0), dst, b)
 
@@ -665,7 +665,7 @@ def CPU(mem_init, clk):
                              'RETI2': STATES['FETCH'],
                              'PUSH': STATES['FETCH']})
 
-    print calcAreaDelay(mem_addr.concat(prev_mem_in.next))
+    # print calcAreaDelay(mem_addr.concat(prev_mem_in.next))
     return {'state': state.prev, 'src_reg': src_reg, 'dst_reg': dst_reg,
             'src_out': src_out, 'dst_out': dst_out, 'mem_addr': mem_addr, 'mem_out': mem_out,
             'regs': regs, 'src': src.next, 'dst': dst.next, 'dst_in': dst_in, 'dst_wr': dst_wr,

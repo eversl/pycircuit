@@ -11,11 +11,18 @@ from operator import __and__, __xor__, __or__, __invert__
 sim_steps = 0
 
 
-def zip_all(*args):
+def check_len(*args):
+    if len(args) == 0:
+        return 0
     for i in xrange(0, len(args)):
         for j in xrange(i + 1, len(args)):
             if len(args[i]) != len(args[j]):
                 raise TypeError('Vectors are not of equal size: %i and %i' % (len(args[i]), len(args[j])))
+    return len(args[i])
+
+
+def zip_all(*args):
+    check_len(*args)
     return zip(*args)
 
 
@@ -354,21 +361,49 @@ class FeedbackSignal(Signal):
 
 
 class Vector(object):
-    def __init__(self, value):
+    def __init__(self, bits):
         self.stack = inspect.currentframe().f_back
         self.enum = None
-        self.ls = list(value)
-        for s in self.ls:
-            assert isinstance(s, Signal)  # don't combine vectors into new vector, use concat for that
-            if s.vec is None:
-                s.vec = self
+        self.bits = bits
+        self._ls = None
+        self.busy = False
+
+    post_connects = []
+
+    @property
+    def ls(self):
+        if self._ls is None:
+            do_post = Vector.post_connects == []
+            # assert isinstance(self, ConstantVector) or self not in Vector.post_connects
+            Vector.post_connects.append(self)
+            assert not self.busy
+            self.busy = True
+            try:
+                self._ls = list(self.signals())
+                assert len(self._ls) == self.bits
+                for s in self._ls:
+                    assert isinstance(s, Signal)  # don't combine vectors into new vector, use concat for that
+                    if s.vec is None:
+                        s.vec = self
+            finally:
+                self.busy = False
+
+            if do_post:
+                for v in Vector.post_connects:
+                    v.connect_signals()
+                Vector.post_connects = []
+        return self._ls
+
+    @ls.setter
+    def ls(self, value):
+        self._ls = value
 
     def makeEnum(self, enum):
         self.enum = enum
         return self
 
     def toUint(self):
-        return signalsToInt(self.ls, False)
+        return self.current()
 
     def __repr__(self):
         if self.enum:
@@ -379,7 +414,7 @@ class Vector(object):
             return '{0}({1}, {2})'.format(type(self).__name__, val, len(self))
 
     def __len__(self):
-        return len(self.ls)
+        return self.bits
 
     def __getitem__(self, key):
         def current_func(start, stop):
@@ -390,20 +425,30 @@ class Vector(object):
 
             return inner
 
-        res = CircuitVector(self.ls[key],
+        def signals():
+            if not isinstance(key, slice):
+                return [self.ls[key]]
+            else:
+                return self.ls[key]
+
+        res = CircuitVector(1 if not isinstance(key, slice) else len(range(self.bits)[key]),
+                            signals=signals,
                             func=current_func(
-                                (len(self.ls) + key if key < 0 else key) if not isinstance(key, slice) else
+                                (self.bits + key if key < 0 else key) if not isinstance(key, slice) else
                                 0 if key.start is None else
-                                len(self.ls) + key.start if key.start < 0 else key.start,
-                                ((len(self.ls) + key if key < 0 else key) + 1) if not isinstance(key, slice) else
-                                len(self.ls) if key.stop is None else
-                                len(self.ls) + key.stop if key.stop < 0 else key.stop),
+                                self.bits + key.start if key.start < 0 else key.start,
+                                ((self.bits + key if key < 0 else key) + 1) if not isinstance(key, slice) else
+                                self.bits if key.stop is None else
+                                self.bits + key.stop if key.stop < 0 else key.stop),
                             args=[self])
         assert (not isinstance(key, slice) or key.step is None)
         return res
 
     def __int__(self):
-        return signalsToInt(self.ls)
+        val = self.toUint()
+        if (val << 1) > (1 << self.bits):
+            val -= (1 << self.bits)
+        return val
 
     def __iter__(self):
         return (self[n] for n in xrange(len(self)))
@@ -474,12 +519,9 @@ class Vector(object):
     def __nonzero__(self):
         return int(self) != 0
 
-    def append(self, other):
-        self.ls += other.ls if isinstance(other, Vector) else [other] if isinstance(other, Signal) else other[:]
-
     def concat(self, *others):
         def current_func(*vecs):
-            sizes = [len(v.ls) if isinstance(v, Vector) else 1 for v in vecs]
+            sizes = [len(v) for v in vecs]
 
             def inner(*vals):
                 res = 0
@@ -489,12 +531,16 @@ class Vector(object):
 
             return inner
 
-        lss = [o.ls if isinstance(o, Vector) else [o] if isinstance(o, Signal) else o[:] for o in others]
-        res = CircuitVector(self.ls + sum(lss, []), func=current_func(self, *others), args=[self] + list(others))
+        def signals():
+            lss = [o.ls for o in others]
+            return self.ls + sum(lss, [])
+
+        res = CircuitVector(len(self) + sum(len(o) for o in others), signals=signals, func=current_func(self, *others),
+                            args=[self] + list(others))
         return res
 
     def extendBy(self, l, LSB=False, signed=False, signal=None):
-        if signal == None:
+        if signal is None:
             signal = VFalse
         assert isinstance(signal, Vector)
         if len(signal) != 1:
@@ -523,35 +569,48 @@ class Vector(object):
 
             return inner
 
+        def signals():
+            return self.ls[0:1] * n
+
         if n == 1:
             return self
-        return CircuitVector(self.ls[0:1] * n, func=current_func(n), args=[self])
+        return CircuitVector(n, signals=signals, func=current_func(n), args=[self])
 
     # op is an CircuitOper class that is applied to all signals of self. returns a 1-vector
     def reduce(self, op):
-        obj = op(*self.ls)
+        # obj = op(*self.ls)
+        obj = op()
+
+        def signals():
+            res = op(*self.ls)
+            return res
 
         def current_func(arg):
             return obj.func(*intToBits(arg, len(self)))
 
-        return CircuitVector(obj, func=current_func, args=[self])
+        return CircuitVector(1, signals=signals, func=current_func, args=[self])
 
     @classmethod
     # apply function pairwise on each signal in the argument vectors
     # fn is a function of multiple arguments that evaluates both on bool arguments
     # as on ints, treating them bitwise.
     def op(cls, fn, *args):
-        signals = [fn(*arg) for arg in zip_all(*(a.ls for a in args))]
+        bits = check_len(*args)
+
+        def signals():
+            return [fn(*arg) for arg in zip_all(*(a.ls for a in args))]
 
         def current_func(*val):
             vec = fn(*val)
-            return vec & (1 << len(signals)) - 1
+            return vec & (1 << bits) - 1
 
-        return CircuitVector(signals, func=current_func, args=args)
+        return CircuitVector(bits, signals=signals, func=current_func, args=args)
 
     def checkEqual(self, val):
-        if val != self.toUint():
-            print "Current result", val, "not equal to", self.toUint()
+        signals_val = signalsToInt(self.ls, False)
+        if val != signals_val:
+            print "Current result", val, "not equal to", signals_val
+            assert False
             current_cache.clear()
             print self.current()
             stack = self.stack
@@ -574,24 +633,31 @@ class Vector(object):
             print "on arguments:", self.args
             assert False
 
+    def connect_signals(self):
+        pass
+
+
+def makeVector(ls):
+    res = Vector(len(ls))
+    res._ls = ls
+    return res
 
 class CircuitVector(Vector):
-    def __init__(self, value, func=None, args=[], enum=None):
-        self.enum = enum
-        self.func = func
+    def __init__(self, bits, signals, func=None, args=None, enum=None):
+        Vector.__init__(self, bits)
+        if args is None:
+            args = []
         # assert func != None
         for a in args:
             assert isinstance(a, Vector), (type(a), a)
         self.args = args
-        if isinstance(value, Vector):
-            ls = value.ls
-        else:
-            ls = [s if isinstance(s, Signal) else ConstantSignal(s) for s in value]
-        Vector.__init__(self, ls)
+        self.enum = enum
+        self.func = func
+        self.signals = signals
 
     def current(self):
-        if id(self) in current_cache:
-            return current_cache[id(self)]
+        if self in current_cache:
+            return current_cache[self]
 
         args = [a.current() for a in self.args]
         try:
@@ -599,29 +665,32 @@ class CircuitVector(Vector):
         except TypeError as e:
             val = evalDontCare(self, args)
 
+        current_cache[self] = val
         self.checkEqual(val)
-        current_cache[id(self)] = val
         return val
 
 
 class ValueVector(Vector):
-    def __init__(self, value, ls):
-        Vector.__init__(self, ls)
+    def __init__(self, value, bits):
+        Vector.__init__(self, bits)
         try:
-            self.const = int(value) & (1 << len(ls)) - 1
+            self.value = int(value) & (1 << bits) - 1
         except TypeError:
-            self.const = value
+            self.value = value
 
     def current(self):
-        return self.const
+        return self.value
 
 
 class ConstantVector(ValueVector):
     def __init__(self, value, bits=16, enum=None):
-        ls = [ConstantSignal(b) for b in intToBits(int(value), bits)]
-        ValueVector.__init__(self, value, ls)
+        ValueVector.__init__(self, value, bits)
         if enum:
             self.makeEnum(enum)
+
+    def signals(self):
+        ls = [ConstantSignal(b) for b in intToBits(int(self.value), self.bits)]
+        return ls
 
     def __hash__(self):
         return int(self)
@@ -636,8 +705,12 @@ VFalse = ConstantVector(False, 1)
 
 class TestVector(ValueVector):
     def __init__(self, value, bits=16):
-        ls = [TestSignal(b) for b in intToBits(int(value), bits)]
-        ValueVector.__init__(self, value, ls)
+        ValueVector.__init__(self, value, bits)
+        ls = self.signals()
+
+    def signals(self):
+        ls = [TestSignal(b) for b in intToBits(int(self.value), self.bits)]
+        return ls
 
     def __setitem__(self, key, value):
         if isinstance(key, slice):
@@ -651,9 +724,11 @@ class TestVector(ValueVector):
         for b, s in zip(bits, signals):
             s.value = b.value if isinstance(b, Signal) else b
         try:
-            self.const = int(value) & (1 << len(signals)) - 1
+            assert key == slice(None, None, None)
+            self.value = int(value) & (1 << len(signals)) - 1
         except TypeError:
-            self.const = value
+            self.value = value
+        current_cache.clear()
         simulate(signals)
 
 
@@ -668,9 +743,8 @@ class Clock(TestVector):
             newvals = [(r, r.next.current()) for e, r in enumerate(self.registers)]
             self[:] = 1
             self[:] = 0
-            current_cache.clear()
             for r, v in newvals:
-                r.const = v
+                r.value = v
                 assert r.current() == v
 
             if CPU_state is not None:
@@ -680,38 +754,42 @@ class Clock(TestVector):
 
 
 class FeedbackVector(Vector):
-    def __init__(self, value=0, bits=16):
-        ls = value
+    def __init__(self, value=0, bits=1):
+        self.arg = None
+        if isinstance(value, Vector):
+            bits = value.bits
+        Vector.__init__(self, bits)
+        if isinstance(value, Vector):
+            if value.enum:
+                self.makeEnum(value.enum)
+            value = value.current()
+        self.value = value
 
-        if isinstance(ls, Vector):
-            ls = value.ls
-        try:
-            ls = (FeedbackSignal(s) for s in ls)
-        except TypeError:
-            ls = [FeedbackSignal(b) for b in intToBits(int(ls), bits)]
-        else:
-            ls = [s if isinstance(s, FeedbackSignal) else FeedbackSignal(s) for s in ls]
-        Vector.__init__(self, ls)
-
-        if isinstance(value, Vector) and value.enum:
-            self.makeEnum(value.enum)
+    def signals(self):
+        self._ls = [FeedbackSignal(b) for b in intToBits(int(self.value), self.bits)]
+        return self._ls
 
     def connect(self, vec):
         self.arg = vec
-        for my_sig, other_sig in zip_all(self.ls, vec.ls):
-            my_sig.connect(other_sig)
+        if self._ls is not None:
+            self.connect_signals()
+
+    def connect_signals(self):
+        if self.arg is not None:
+            for my_sig, other_sig in zip_all(self._ls, self.arg.ls):
+                my_sig.connect(other_sig)
 
     def current(self):
-        if id(self) in current_cache:
-            if current_cache[id(self)] is None:
-                return 0
+        if self in current_cache:
+            if current_cache[self] is None:
+                return self.value
             else:
-                return current_cache[id(self)]
-        current_cache[id(self)] = None
+                return current_cache[self]
+        current_cache[self] = None
 
         val = self.arg.current()
 
-        current_cache[id(self)] = val
+        current_cache[self] = val
         self.checkEqual(val)
         return val
 
@@ -801,24 +879,18 @@ class DontCareSignal(ConstantSignal):
 DontCareSig = DontCareSignal()
 
 
-class ConstantVector(ValueVector):
-    def __init__(self, value, bits=16, enum=None):
-        ls = [ConstantSignal(b) for b in intToBits(int(value), bits)]
-        ValueVector.__init__(self, value, ls)
-        if enum:
-            self.makeEnum(enum)
-
-
 class DontCareVector(ValueVector):
     def __init__(self, bits=16):
-        ls = [DontCareSig] * bits
         mask = (1 << bits) - 1
         value = DontCare(False, mask)
-        ValueVector.__init__(self, value, ls)
+        ValueVector.__init__(self, value, bits)
+
+    def signals(self):
+        ls = [DontCareSig] * self.bits
+        return ls
 
     def __repr__(self):
-        return "DontCareVector({0})".format(len(self.ls))
-
+        return "DontCareVector({0})".format(self.bits)
 
 
 class CircuitOper(Signal):
@@ -864,7 +936,7 @@ class CircuitOper(Signal):
 
 class And(CircuitOper):
     def func(self, *a):
-        return reduce(lambda p, q: p & q, a)
+        return reduce(lambda p, q: p & q, a, True)
 
     @staticmethod
     def constPartial(v, cf):
@@ -873,7 +945,7 @@ class And(CircuitOper):
 
 class Or(CircuitOper):
     def func(self, *a):
-        return reduce(lambda p, q: p | q, a)
+        return reduce(lambda p, q: p | q, a, False)
 
     @staticmethod
     def constPartial(v, cf):
@@ -899,7 +971,7 @@ class Not(CircuitOper):
 
 class Nor(CircuitOper):
     def func(self, *a):
-        or_val = reduce(lambda p, q: p | q, a)
+        or_val = reduce(lambda p, q: p | q, a, False)
         if isinstance(or_val, DontCare):
             return DontCareBool
         else:
@@ -920,7 +992,7 @@ class Enum(object):
         while maxarg >= (1 << bits):
             bits += 1
 
-        self._dict = {k: ConstantVector(v, bits).makeEnum(self) for v, k in kv}
+        self._dict = {k: ConstantVector(v, bits, self) for v, k in kv}
 
     def __getitem__(self, item):
         return self._dict[item]
@@ -978,8 +1050,7 @@ def Case(state, cases, default=None):
         for k in cases:
             if k.enum != state.enum:
                 raise ValueError("%s and %s are not of same enum type")
-    zip_all(state, *cases.keys())
-    length = len(state)
+    length = check_len(state, *cases.keys())
     if default is None:
         default = getDefault(*cases.values())
     else:
@@ -1032,7 +1103,7 @@ def RippleCarryAdder(als, bls, c=False):
     sls = ConstantVector(0, 0)
     for a, b in zip_all(als, bls):
         s, c = FullAdder(a, b, c)
-        sls.append(s)
+        sls = Vector.concat(sls, s)
     return sls, c
 
 
@@ -1177,37 +1248,35 @@ def Memory(clk, addr, data, isWrite, init=None):
     sets = Vector.op(__and__, isWriteVec, data)
     resets = Vector.op(__and__, isWriteVec, ~data)
 
-    q_outs = [[SRLatch(access & s, access & r, b)[0] & access
-               for (s, r, b) in zip_all(sets.ls, resets.ls, list(intToBits(val, len(data))))]
-              for access, val in zip_all(wordlines.ls, initvalues)]
-    res = CircuitVector([Or(*l) for l in zip(*q_outs)], func=current_func(initvalues), args=[addr, data, isWrite])
-    res.q_outs = q_outs
+    def signals():
+        q_outs = [[SRLatch(access & s, access & r, b)[0] & access
+                   for (s, r, b) in zip_all(sets.ls, resets.ls, list(intToBits(val, len(data))))]
+                  for access, val in zip_all(wordlines.ls, initvalues)]
+        return [Or(*l) for l in zip(*q_outs)]
+
+    res = CircuitVector(len(data), signals=signals, func=current_func(initvalues), args=[addr, data, isWrite])
     return res
 
 
 def ROM(_, addr, data, __, init):
-    def current_func(values, q_outs):
-        def inner(mem_addr):
-            q_vals = [signalsToInt([q.args[0] for q in qs], False) for qs in q_outs]
-            uvalues = [v & ~(-1 << len(q_outs[0])) for v in values]
-            if q_vals != uvalues:
-                assert q_vals == uvalues, (q_vals, uvalues)
+    def current_func(values):
+        def inner(mem_addr, _data):
             return values[mem_addr]
 
         return inner
 
     if not init:
         init = []
-    delayedAddr = addr
+    mask = (1 << len(data)) - 1
+    initvalues = [i & mask for i in (init + [0] * ((1 << len(addr)) - len(init)))]
 
-    wordlines = Decoder(delayedAddr)  # [c & r for c in collines for r in rowlines]
+    wordlines = Decoder(addr)
 
-    initvalues = (init + [0] * (len(wordlines) - len(init)))
+    def signals():
+        q_outs = [(ConstantVector(val) & access).ls for access, val in zip_all(wordlines, initvalues)]
+        return [Or(*l) for l in zip(*q_outs)]
 
-    q_outs = [[ConstantSignal(b) & access for b in list(intToBits(val, len(data)))]
-              for access, val in zip_all(wordlines.ls, initvalues)]
-    res = CircuitVector([Or(*l) for l in zip(*q_outs)], func=current_func(initvalues, q_outs), args=[delayedAddr])
-    res.q_outs = q_outs
+    res = CircuitVector(len(data), signals=signals, func=current_func(initvalues), args=[addr, data])
     return res
 
 
@@ -1222,12 +1291,12 @@ def Multiplexer(sel, alts):
 
     def combiner(alts):
         alts = list(alts)
-        alt0 = alts.ls[0] if isinstance(alts, Vector) else alts[0]
+        alt0 = alts[0]
         if isinstance(alt0, Signal):
             for alt in alts[1:]:
                 if not isinstance(alt, Signal):
                     raise TypeError()
-            return Or(*(Vector(alts) & enables).ls)
+            return (makeVector(alts) & enables).reduce(Or)
         elif isinstance(alt0, dict):
             typ = type(alt0)
             keys = set(alt0.keys())
@@ -1245,7 +1314,14 @@ def Multiplexer(sel, alts):
                     raise TypeError()
                 if len(alt) is not ln:
                     raise ValueError()
-            return CircuitVector((combiner(a.ls[i] for a in alts) for i in xrange(ln)), func=current_func(alts),
+
+            def signals():
+                ls = [combiner([a.ls[i] for a in alts]) for i in xrange(ln)]
+                for e in ls:
+                    assert len(e) == 1
+                return [e.ls[0] for e in ls]
+
+            return CircuitVector(ln, signals=signals, func=current_func(alts),
                                  args=[sel])
         else:
             typ = type(alt0)
@@ -1285,18 +1361,17 @@ def FlipFlops(dls, clk, init=None):
     if init is None: init = [None] * len(dls)
     outs = zip_all(*tuple(DFlipFlop(d, clk, i) for d, i in zip(dls, init)))
     if len(outs) == 0:
-        return Vector([])
-    return Vector(outs[0])
+        return makeVector([])
+    return makeVector(outs[0])
 
 
 class Register(FeedbackVector):
-    def __init__(self, clk, value=0, bits=16, name=None):
+    def __init__(self, clk, value=0, bits=1, name=None):
         def inner():
             return self.current()
 
         FeedbackVector.__init__(self, value, bits)
         self.clk = clk
-        self.const = signalsToInt(self.ls, False)
         self.next = None
         self.prev = self
         clk.registers.append(self)
@@ -1306,17 +1381,23 @@ class Register(FeedbackVector):
 
     def connect(self, next):
         self.next = next
-        flops = FlipFlops(next.ls, self.clk.ls[0], self.ls)
-        FeedbackVector.connect(self, flops)
-        self.checkEqual(self.const)
+
+        if self._ls is not None:
+            self.connect_signals(next)
         return self
+
+    def connect_signals(self):
+        if self.next is not None:
+            self.arg = FlipFlops(self.next.ls, self.clk.ls[0], self._ls)
+            FeedbackVector.connect_signals(self)
+            self.checkEqual(self.value)
 
     def ccase(self, state, cases, default=None):
         if default is None: default = self
         self.connect(Case(state, cases, default))
 
     def current(self):
-        val = self.const
+        val = self.value
 
         self.checkEqual(val)
         return val

@@ -121,6 +121,7 @@ class Test(unittest.TestCase):
         for a in xrange(-256, 255, 67):
             for b in xrange(-22756, 32767, 1453):
                 for c in xrange(2):
+                    # current_cache.clear()
                     als = ConstantVector(a, 16)
                     bls = ConstantVector(b, 16)
                     sls, c_out = RippleCarryAdder(als, bls, bool(c))
@@ -208,6 +209,7 @@ class Test(unittest.TestCase):
         a = TestVector(255, bitlen)
         b = TestVector(255, bitlen)
         m = Multiplier(a, b, False)
+        # noinspection PyCallByClass
         print calcAreaDelay(Vector.concat(a, b))
         self.assertEqual(len(m), bitlen * 2)
         for av in xrange(2, 2 ** bitlen, 23):
@@ -230,6 +232,7 @@ class Test(unittest.TestCase):
         d = TestVector(0, 16)
         mem_wr = TestVector(0, 1)
         q = Memory(clk, a, d, mem_wr)
+        self.assertVectorEqual(q, d)
         self.assertCurrent(q)
         print calcAreaDelay(a.concat(d).concat(mem_wr))
         for i in xrange(2 ** SZ):
@@ -240,8 +243,10 @@ class Test(unittest.TestCase):
             d[:] = i
             a[:] = i
             mem_wr[:] = 1
+            self.assertVectorEqual(q, d)
             self.assertCurrent(q)
             mem_wr[:] = 0
+            self.assertVectorEqual(q, d)
             self.assertCurrent(q)
         for i in xrange(2 ** SZ):
             a[:] = i
@@ -256,13 +261,10 @@ class Test(unittest.TestCase):
         mem_wr = VFalse
         q = ROM(clk, a, d, mem_wr, range(2 ** size))
         self.assertCurrent(q)
-        print calcAreaDelay(a)
         for i in xrange(2 ** size):
             a[:] = i
             self.assertVectorEqual(q, i)
             self.assertCurrent(q)
-        (q,) = simplify(q)
-        print calcAreaDelay(a)
 
     def _test_AdderDelay(self):
         for bitlen in xrange(2, 65):
@@ -730,7 +732,7 @@ class Test(unittest.TestCase):
         clk.cycle(d1, CPU_state)
         self.assertVectorEqual(debuglines['regs'][4], (s0 + s1 + s2) * 2)
 
-    def test_currentRegisters(self):
+    def test_Register(self):
         clk = Clock()
         r = Register(clk, 1, 2)
         res, c = KoggeStoneAdder(r, ConstantVector(1, 2))
