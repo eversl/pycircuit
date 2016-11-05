@@ -5,7 +5,7 @@ Created on Feb 4, 2014
 '''
 import inspect
 import itertools
-from operator import __and__, __xor__, __or__, __invert__
+from operator import __and__, __xor__, __or__, __invert__, or_, and_, xor
 
 sim_steps = 0
 
@@ -125,33 +125,38 @@ def signalsToInt(ls, signed=True):
     except TypeError:
         mask = sum(1 << i for i, v in enumerate(ls) if type(v.value) is DontCare)
         num = sum(1 << i for i, v in enumerate(ls) if type(v.value) is not DontCare and v.value)
-        return DontCare(num, mask)
+        return DontCareVal(num, mask)
     return num
 
 
-def evalDontCare(self, args):
-    argvals = []
-    for a in args:
-        if type(a) is DontCare:
-            bits = [b for b in
-                    itertools.takewhile(lambda x: x <= a.mask, itertools.imap(lambda x: 1 << x, itertools.count()))
-                    if b & a.mask]
-            aval = (a.val & ~a.mask)
-            argvals.append(list(itertools.imap(lambda x: aval | sum(itertools.compress(bits, x)),
-                                               itertools.product([0, 1], repeat=len(bits)))))
-        else:
-            argvals.append([a])
+def r((pv, pm), (qv, _qm)):
+    return (pv & qv), (pv ^ qv) | pm
 
-    def r((pv, pm), (qv, qm)):
-        return (pv & qv), (pv ^ qv) | pm
 
+def calc_val(self, args):
+    argvals = (calc_all(a) for a in args)
     v, m = reduce(r, ((self.func(*av), 0) for av in itertools.product(*argvals)))
-    val = v if m == 0 else DontCare(v, m)
+    val = DontCareVal(v, m)
+    return val
+
+
+def calc_all(a):
+    if type(a) is DontCare:
+        bits = [b for b in
+                itertools.takewhile(lambda x: x <= a.mask, itertools.imap(lambda x: 1 << x, itertools.count()))
+                if b & a.mask]
+        aval = (a.val & ~a.mask)
+        val = itertools.imap(lambda x: aval | sum(itertools.compress(bits, x)),
+                             itertools.product([0, 1], repeat=len(bits)))
+    else:
+        val = [a]
     return val
 
 
 class Signal(object):
+    __slots__ = "value", "fanout", "vec"
     def __init__(self):
+        self.value = None
         self.fanout = set()
         self.vec = None
 
@@ -186,19 +191,8 @@ class Signal(object):
         simulate([self])
 
     def eval(self):
-        try:
-            value = self.func(*(arg.value for arg in self.args))
-            if any(isinstance(arg.value, DontCare) for arg in self.args):
-                ev_value = evalDontCare(self, (a.value for a in self.args))
-                if value != ev_value:
-                    value = self.func(*(arg.value for arg in self.args))
-                    ev_value = evalDontCare(self, (a.value for a in self.args))
-                    assert value == ev_value
-        except TypeError:
-            assert False
-            valueTrue = self.func(*(True if type(arg.value) is DontCare else arg.value for arg in self.args))
-            valueFalse = self.func(*(False if type(arg.value) is DontCare else arg.value for arg in self.args))
-            value = valueTrue if valueTrue == valueFalse else DontCareBool
+        value = calc_val(self, [a.value for a in self.args])
+
         if self.value == value:
             return []
         else:
@@ -554,7 +548,7 @@ class Vector(object):
                 dupbits = (1 << num) - 1
                 if isinstance(sigv, DontCare):
                     if sigv.mask & 1:
-                        return DontCare(0, dupbits)
+                        return DontCareVal(0, dupbits)
                     else:
                         return 0
                 return dupbits if (sigv & 1) else 0
@@ -656,7 +650,7 @@ class CircuitVector(Vector):
         try:
             val = self.func(*args)
         except TypeError as e:
-            val = evalDontCare(self, args)
+            val = calc_val(self, args)
 
         current_cache[self] = val
         self.checkEqual(val)
@@ -810,7 +804,7 @@ class DontCare(object):
             new_val = self.val & other
             new_mask = self.mask & other
         if new_mask:
-            return DontCare(new_val, new_mask)
+            return DontCareVal(new_val, new_mask)
         else:
             return new_val
 
@@ -825,7 +819,7 @@ class DontCare(object):
             new_val = self.val | other
             new_mask = self.mask & ~other
         if new_mask:
-            return DontCare(new_val, new_mask)
+            return DontCareVal(new_val, new_mask)
         else:
             return new_val
 
@@ -839,25 +833,32 @@ class DontCare(object):
         else:
             new_mask = self.mask
             new_val = (self.val ^ other) & ~new_mask
-        return DontCare(new_val, new_mask)
+        return DontCareVal(new_val, new_mask)
 
     def __rxor__(self, other):
         return self.__xor__(other)
 
     def __invert__(self):
-        return DontCare(~(self.val | self.mask), self.mask)
+        return DontCareVal(~(self.val | self.mask), self.mask)
 
     def __lshift__(self, other):
-        return DontCare(self.val << other, self.mask << other)
+        return DontCareVal(self.val << other, self.mask << other)
 
     def __rshift__(self, other):
-        return DontCare(self.val >> other, self.mask >> other)
+        return DontCareVal(self.val >> other, self.mask >> other)
 
     def __repr__(self):
         return "DontCare(" + str(self.val) + ", " + str(self.mask) + ")"
 
 
 DontCareBool = DontCare(False, 1)
+
+
+def DontCareVal(v, m):
+    val = v if m == 0 else \
+        DontCareBool if m == 1 and type(v) is bool else \
+            DontCare(v, m)
+    return val
 
 
 class DontCareSignal(ConstantSignal):
@@ -929,7 +930,7 @@ class CircuitOper(Signal):
 
 class And(CircuitOper):
     def func(self, *a):
-        return reduce(lambda p, q: p & q, a, True)
+        return reduce(and_, a, True)
 
     @staticmethod
     def constPartial(v, cf):
@@ -938,7 +939,7 @@ class And(CircuitOper):
 
 class Or(CircuitOper):
     def func(self, *a):
-        return reduce(lambda p, q: p | q, a, False)
+        return reduce(or_, a, False)
 
     @staticmethod
     def constPartial(v, cf):
@@ -947,7 +948,7 @@ class Or(CircuitOper):
 
 class Xor(CircuitOper):
     def func(self, *a):
-        return reduce(lambda p, q: p ^ q, a)
+        return reduce(xor, a)
 
     @staticmethod
     def constPartial(v, cf):
@@ -964,7 +965,7 @@ class Not(CircuitOper):
 
 class Nor(CircuitOper):
     def func(self, *a):
-        or_val = reduce(lambda p, q: p | q, a, False)
+        or_val = reduce(or_, a, False)
         if isinstance(or_val, DontCare):
             return DontCareBool
         else:
