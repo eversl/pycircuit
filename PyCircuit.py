@@ -5,7 +5,6 @@ Created on Feb 4, 2014
 '''
 import inspect
 import itertools
-from collections import Counter
 from operator import __and__, __xor__, __or__, __invert__
 
 sim_steps = 0
@@ -49,47 +48,21 @@ def printMonitored():
                                        for v in monitoredVectors))
 
 
-def simulate(signals, recur=None):
+def simulate(signals):
     global sim_steps
-    if recur is None:
-        recur = Counter()
     sim_steps += 1
     next_signals = set()
     for sig in signals:
         if isinstance(sig, FeedbackSignal):
-            recur.update(sig)
-            if recur[sig] >= 8:
-                def findPrev(sigs, targ, oldSigs):
-                    # print len(sigs)
-                    if targ in sigs:
-                        return [targ]
-                    allArgs = [s.args for s in sigs]
-                    allArgSet = set()
-                    for s in allArgs:
-                        allArgSet.update(s)
-                    allArgSet.difference_update(oldSigs)
-                    if not allArgSet:
-                        return sigs
-                    oldSigs.update(allArgSet)
-                    path = findPrev(list(allArgSet), targ, oldSigs)
-                    return path + [sigs[[n for n, a in enumerate(allArgs) if path[-1] in a][0]]]
+            next_signals.update(*(sig.eval() for sig in sig._path))
 
-                path = findPrev(sig.args, sig, set())
-                # print "findPrev", len(path), sig.stack.f_back.f_code.co_name
-                nexts = set.union(*(sig.eval() for sig in path))
-                # recur[sig] = 0
-
-                new_nexts = nexts
-                next_signals.update(new_nexts)
-
-                continue
         next_signals.update(sig.eval())
     global monitored
     if any(s in signals for s in monitored):
         printMonitored()
     if not next_signals:
         return
-    simulate(next_signals, recur)
+    simulate(next_signals)
 
 
 def simplify(*args, **kwargs):
@@ -232,6 +205,23 @@ class Signal(object):
             self.value = value
             return self.fanout
 
+    def find_path(self, sigs, oldSigs):
+        # print len(sigs)
+        if self in sigs:
+            self._path = [self]
+            return
+        allArgs = [s.fanout for s in sigs]
+        allArgSet = set()
+        allArgSet.update(*allArgs)
+        allArgSet.difference_update(oldSigs)
+        if not allArgSet:
+            self._path = []
+            return
+        oldSigs.update(allArgSet)
+        self.find_path(list(allArgSet), oldSigs)
+        if self._path:
+            self._path.append(sigs[[n for n, a in enumerate(allArgs) if self._path[-1] in a][0]])
+
     def checkEqual(self, val):
         if val != self.value:
             print self, "current result", val, "not equal to", self.value
@@ -340,6 +330,7 @@ class TestSignal(Signal):
 class FeedbackSignal(Signal):
     def __init__(self, arg):
         Signal.__init__(self)
+        self._path = []
         self.setArgs((arg,))
 
     def simplify(self, D):
@@ -354,6 +345,7 @@ class FeedbackSignal(Signal):
     def connect(self, sig):
         self.stack = inspect.currentframe().f_back
         self._removeArgs()
+        sig.find_path(list(sig.fanout), set())
         simulate(self.setArgs((sig,)))
 
     def func(self, arg):
@@ -641,6 +633,7 @@ def makeVector(ls):
     res = Vector(len(ls))
     res._ls = ls
     return res
+
 
 class CircuitVector(Vector):
     def __init__(self, bits, signals, func=None, args=None, enum=None):
