@@ -177,7 +177,7 @@ JMP_INSTR = {'JNZ': 0b000,
              'JL': 0b110,
              'JMP': 0b111}
 
-INSTRS = Enum(dict(TWO_INSTR.items() +
+INSTRS = Enum(dict(list(TWO_INSTR.items()) +
                    [(i, ONE_INSTR[i] + (I_TYPES['IT_ONE'].toUint() << 3)) for i in ONE_INSTR] +
                    [(i, JMP_INSTR[i] + (I_TYPES['IT_JUMP'].toUint() << 3)) for i in JMP_INSTR]))
 B = True

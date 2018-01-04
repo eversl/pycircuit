@@ -5,24 +5,25 @@ Created on Feb 4, 2014
 '''
 import inspect
 import itertools
+from functools import reduce
 from operator import __and__, __xor__, __or__, __invert__, or_, and_, xor
 
 sim_steps = 0
 
 
-def check_len(*args):
+def len_all(*args):
     if len(args) == 0:
         return 0
-    for i in xrange(0, len(args)):
-        for j in xrange(i + 1, len(args)):
+    for i in range(0, len(args)):
+        for j in range(i + 1, len(args)):
             if len(args[i]) != len(args[j]):
                 raise TypeError('Vectors are not of equal size: %i and %i' % (len(args[i]), len(args[j])))
     return len(args[i])
 
 
 def zip_all(*args):
-    check_len(*args)
-    return zip(*args)
+    len_all(*args)
+    return list(zip(*args))
 
 
 monitored = []
@@ -40,12 +41,13 @@ def monitor(val):
 
 
 def printMonitored():
-    print "{:>8d}:  {}".format(sim_steps,
+    print("{:>8d}:  {}".format(sim_steps,
                                "".join(("{:^16}".format([k for k in v.enum if int(v.enum[k]) == int(v)])
                                         if v.enum else "{:^18}".format(v.toUint()))
                                        if isinstance(v, Vector) else
-                                       "".join("D" if type(s.value) is DontCare else "-" if s.value else "_" for s in v)
-                                       for v in monitoredVectors))
+                                       "".join(
+                                           "D" if isinstance(s.value, DontCare) else "-" if s.value else "_" for s in v)
+                                       for v in monitoredVectors)))
 
 
 def simulate(signals):
@@ -87,11 +89,11 @@ def simplify(*args, **kwargs):
         new_args.append(arg)
 
     if 'D' not in kwargs:
-        DT = D[True];
+        DT = D[True]
         del D[True]
-        DF = D[False];
+        DF = D[False]
         del D[False]
-        DN = D[None];
+        DN = D[None]
         del D[None]
     vecs = set([k.vec for k in D if hasattr(k, 'vec')])
     for v in vecs:
@@ -106,7 +108,7 @@ current_cache = {}
 
 
 def intToBits(num, bits):
-    return (((num >> i) & 1) for i in xrange(bits))
+    return (((num >> i) & 1) for i in range(bits))
 
 
 def intToSignals(num, bits):
@@ -114,7 +116,7 @@ def intToSignals(num, bits):
 
 
 def DontCareToBits(dc, bits):
-    return (DontCareBool if ((dc.mask >> i) & 1) == 1 else ((dc.val >> i) & 1) == 1 for i in xrange(bits))
+    return (DontCareBool if ((dc.mask >> i) & 1) == 1 else ((dc.val >> i) & 1) == 1 for i in range(bits))
 
 
 def signalsToInt(ls, signed=True):
@@ -129,7 +131,9 @@ def signalsToInt(ls, signed=True):
     return num
 
 
-def r((pv, pm), (qv, _qm)):
+def r(p, q):
+    (pv, pm) = p
+    (qv, _qm) = q
     return (pv & qv), (pv ^ qv) | pm
 
 
@@ -143,11 +147,11 @@ def calc_val(self, args):
 def calc_all(a):
     if type(a) is DontCare:
         bits = [b for b in
-                itertools.takewhile(lambda x: x <= a.mask, itertools.imap(lambda x: 1 << x, itertools.count()))
+                itertools.takewhile(lambda x: x <= a.mask, map(lambda x: 1 << x, itertools.count()))
                 if b & a.mask]
         aval = (a.val & ~a.mask)
-        val = itertools.imap(lambda x: aval | sum(itertools.compress(bits, x)),
-                             itertools.product([0, 1], repeat=len(bits)))
+        val = map(lambda x: aval | sum(itertools.compress(bits, x)),
+                  itertools.product([0, 1], repeat=len(bits)))
     else:
         val = [a]
     return val
@@ -178,7 +182,7 @@ class Signal(object):
     def __len__(self):
         return 1
 
-    def __nonzero__(self):
+    def __bool__(self):
         return self.value
 
     def __iter__(self):
@@ -191,7 +195,11 @@ class Signal(object):
         simulate([self])
 
     def eval(self):
-        value = calc_val(self, [a.value for a in self.args])
+        args = (a.value for a in self.args)
+        try:
+            value = self.func(*args)
+        except:
+            value = calc_val(self, args)
 
         if self.value == value:
             return []
@@ -218,7 +226,7 @@ class Signal(object):
 
     def checkEqual(self, val):
         if val != self.value:
-            print self, "current result", val, "not equal to", self.value
+            print(self, "current result", val, "not equal to", self.value)
 
     def setArgs(self, args, check=False):
         if check:
@@ -243,7 +251,7 @@ class Signal(object):
         if check:
             for arg in args:
                 if not self in arg.fanout:
-                    print "whoops!", self, arg, arg.fanout
+                    print("whoops!", self, arg, arg.fanout)
                 assert self in arg.fanout
             for f in self.fanout:
                 assert self in f.args
@@ -352,7 +360,7 @@ class Vector(object):
         self.enum = None
         self.bits = bits
         self._ls = None
-        self.busy = False
+        self.check = True
 
     post_connects = []
 
@@ -362,17 +370,12 @@ class Vector(object):
             do_post = Vector.post_connects == []
             # assert isinstance(self, ConstantVector) or self not in Vector.post_connects
             Vector.post_connects.append(self)
-            assert not self.busy
-            self.busy = True
-            try:
-                self._ls = list(self.signals())
-                assert len(self._ls) == self.bits
-                for s in self._ls:
-                    assert isinstance(s, Signal)  # don't combine vectors into new vector, use concat for that
-                    if s.vec is None:
-                        s.vec = self
-            finally:
-                self.busy = False
+            self._ls = list(self.signals())
+            assert len(self._ls) == self.bits
+            for s in self._ls:
+                assert isinstance(s, Signal)  # don't combine vectors into new vector, use concat for that
+                if s.vec is None:
+                    s.vec = self
 
             if do_post:
                 for v in Vector.post_connects:
@@ -417,7 +420,7 @@ class Vector(object):
             else:
                 return self.ls[key]
 
-        res = CircuitVector(1 if not isinstance(key, slice) else len(range(self.bits)[key]),
+        res = CircuitVector(1 if not isinstance(key, slice) else len(list(range(self.bits))[key]),
                             signals=signals,
                             func=current_func(
                                 (self.bits + key if key < 0 else key) if not isinstance(key, slice) else
@@ -437,16 +440,33 @@ class Vector(object):
         return val
 
     def __iter__(self):
-        return (self[n] for n in xrange(len(self)))
+        return (self[n] for n in range(len(self)))
 
     def __add__(self, other):
-        return KoggeStoneAdder(self, other)[0]
+        def signals():
+            old = KoggeStoneAdder(self, other)[0]
+            return old.ls
+
+        mask = (1 << self.bits) - 1
+        res = CircuitVector(len_all(self, other), signals=signals,
+                            func=lambda a, b: (a + b) & mask, args=[self, other])
+        return res
+
+    def add_carry(self, other, c=False):
+        def signals():
+            old, old_c = KoggeStoneAdder(self, other, c)
+            return old.ls
+
+        mask = (1 << self.bits) - 1
+        res = CircuitVector(len_all(self, other), signals=signals,
+                            func=lambda a, b: (a + b) & mask, args=[self, other])
+        return res
 
     def __sub__(self, other):
         return KoggeStoneAdder(self, ~other, True)[0]
 
     def __mul__(self, other):
-        return Vector(Multiplier(self, other))
+        return Multiplier(self, other)
 
     def __floordiv__(self, other):
         return NotImplemented
@@ -502,7 +522,7 @@ class Vector(object):
     def __ge__(self, other):
         return int(self) >= int(other)
 
-    def __nonzero__(self):
+    def __bool__(self):
         return int(self) != 0
 
     def concat(self, *others):
@@ -544,8 +564,9 @@ class Vector(object):
 
     def dup(self, n):
         def current_func(num):
+            mask = (1 << num) - 1
             def inner(sigv):
-                dupbits = (1 << num) - 1
+                dupbits = mask
                 if isinstance(sigv, DontCare):
                     if sigv.mask & 1:
                         return DontCareVal(0, dupbits)
@@ -581,28 +602,31 @@ class Vector(object):
     # fn is a function of multiple arguments that evaluates both on bool arguments
     # as on ints, treating them bitwise.
     def op(cls, fn, *args):
-        bits = check_len(*args)
+        bits = len_all(*args)
+        mask = (1 << bits) - 1
 
         def signals():
             return [fn(*arg) for arg in zip_all(*(a.ls for a in args))]
 
         def current_func(*val):
             vec = fn(*val)
-            return vec & (1 << bits) - 1
+            return vec & mask
 
         return CircuitVector(bits, signals=signals, func=current_func, args=args)
 
     def checkEqual(self, val):
+        if not self.check:
+            return
         signals_val = signalsToInt(self.ls, False)
         if val != signals_val:
-            print "Current result", val, "not equal to", signals_val
+            print("Current result", val, "not equal to", signals_val)
             assert False
             current_cache.clear()
-            print self.current()
+            print(self.current())
             stack = self.stack
             for _ in range(6):
-                print 'File "{0}", line {1}, in {2}'.format(stack.f_code.co_filename, stack.f_lineno,
-                                                            stack.f_code.co_name)
+                print('File "{0}", line {1}, in {2}'.format(stack.f_code.co_filename, stack.f_lineno,
+                                                            stack.f_code.co_name))
                 stack = stack.f_back
                 if not stack:
                     break
@@ -611,12 +635,12 @@ class Vector(object):
             if not self.func:
                 return
             try:
-                print 'operation: File "{0}", line {1}, in {2}'.format(self.func.func_code.co_filename,
-                                                                       self.func.func_code.co_firstlineno,
-                                                                       self.func.__name__)
+                print('operation: File "{0}", line {1}, in {2}'.format(self.func.__code__.co_filename,
+                                                                       self.func.__code__.co_firstlineno,
+                                                                       self.func.__name__))
             except:
-                print 'operation: <builtin> {0}'.format(self.func.__name__)
-            print "on arguments:", self.args
+                print('operation: <builtin> {0}'.format(self.func.__name__))
+            print("on arguments:", self.args)
             assert False
 
     def connect_signals(self):
@@ -637,10 +661,10 @@ class CircuitVector(Vector):
         # assert func != None
         for a in args:
             assert isinstance(a, Vector), (type(a), a)
+        self.signals = signals
+        self.func = func
         self.args = args
         self.enum = enum
-        self.func = func
-        self.signals = signals
 
     def current(self):
         if self in current_cache:
@@ -725,7 +749,7 @@ class Clock(TestVector):
         self.registers = []
 
     def cycle(self, n=1, CPU_state=None):
-        for _ in xrange(n):
+        for _ in range(n):
 
             newvals = [(r, r.next.current()) for e, r in enumerate(self.registers)]
             self[:] = 1
@@ -735,9 +759,9 @@ class Clock(TestVector):
                 assert r.current() == v
 
             if CPU_state is not None:
-                print "==============================="
+                print("===============================")
                 for k in CPU_state:
-                    print k, ":", CPU_state[k]
+                    print(k, ":", CPU_state[k])
 
 
 class FeedbackVector(Vector):
@@ -786,7 +810,7 @@ class DontCare(object):
         self.val = val
         self.mask = mask
 
-    def __nonzero__(self):
+    def __bool__(self):
         assert self.mask == 1
         return DontCareBool
 
@@ -849,6 +873,9 @@ class DontCare(object):
 
     def __repr__(self):
         return "DontCare(" + str(self.val) + ", " + str(self.mask) + ")"
+
+    def __format__(self, format_spec):
+        return ("DontCare(" + str(self.val) + ", " + str(self.mask) + ")").__format__(format_spec)
 
 
 DontCareBool = DontCare(False, 1)
@@ -976,7 +1003,7 @@ class Enum(object):
     def __init__(self, *args):
         if len(args) == 1:
             try:
-                kv = [(k, v) for v, k in args[0].iteritems()]
+                kv = [(k, v) for v, k in args[0].items()]
             except:
                 kv = list(enumerate(args))
         else:
@@ -1033,24 +1060,24 @@ def getDefault(val1, *vals):
 
 
 def Case(state, cases, default=None):
-    for k in cases.keys():
-        if not (isinstance(k, Vector) or isinstance(k, Signal) or isinstance(k, basestring)):
+    for k in list(cases.keys()):
+        if not (isinstance(k, Vector) or isinstance(k, Signal) or isinstance(k, str)):
             v = cases[k]
             for kk in k:
                 cases[kk] = v
             del cases[k]
     if isinstance(state, Vector) and state.enum:
-        cases = {state.enum[k] if isinstance(k, basestring) else k: cases[k] for k in cases}
+        cases = {state.enum[k] if isinstance(k, str) else k: cases[k] for k in cases}
         for k in cases:
             if k.enum != state.enum:
                 raise ValueError("%s and %s are not of same enum type")
-    length = check_len(state, *cases.keys())
+    length = len_all(state, *list(cases.keys()))
     if default is None:
-        default = getDefault(*cases.values())
+        default = getDefault(*list(cases.values()))
     else:
-        getDefault(default, *cases.values())
+        getDefault(default, *list(cases.values()))
     intcases = {k.toUint(): cases[k] for k in cases}
-    alts = [intcases.get(i, default) for i in xrange(2 ** length)]
+    alts = [intcases.get(i, default) for i in range(2 ** length)]
     return Multiplexer(state, alts)
 
 
@@ -1063,7 +1090,7 @@ def TrueInCase(state, cases):
             new_cases[k] = cases[k]
         except TypeError as e:
             new_cases[k] = VTrue
-    first = new_cases.keys()[0]
+    first = list(new_cases.keys())[0]
     if isinstance(first, Vector) and first.enum is not None:
         allcases = set(first.enum[k] for k in first.enum)
         notcases = allcases - set(new_cases.keys())
@@ -1114,8 +1141,8 @@ def KoggeStoneAdder(als, bls, c=False):
 
     step = 1
     while step < len(als):
-        p = prop[step / 2]
-        g = gen[step / 2]
+        p = prop[step // 2]
+        g = gen[step // 2]
 
         p_prev = p[:-step].extendTo(len(p), LSB=True)
         g_prev = g[:-step].extendTo(len(g), LSB=True, signal=c)
@@ -1136,7 +1163,7 @@ def DecimalAdder(als, bls, c):
     assert isinstance(bls, Vector)
     assert len(als) == len(bls)
     nibbles = [(als[i:i + 4].extendBy(1), bls[i:i + 4].extendBy(1)) for i in
-               xrange(0, len(als), 4)]
+               range(0, len(als), 4)]
     dst_out = []
     for src_n, dst_n in nibbles:
         sum_n, c_out = KoggeStoneAdder(src_n, dst_n, c)
@@ -1310,7 +1337,7 @@ def Multiplexer(sel, alts):
                     raise ValueError()
 
             def signals():
-                ls = [combiner([a.ls[i] for a in alts]) for i in xrange(ln)]
+                ls = [combiner([a.ls[i] for a in alts]) for i in range(ln)]
                 for e in ls:
                     assert len(e) == 1
                 return [e.ls[0] for e in ls]
@@ -1325,7 +1352,7 @@ def Multiplexer(sel, alts):
                     raise TypeError()
                 if len(alt) is not ln:
                     raise ValueError()
-            return typ(combiner(a[i] for a in alts) for i in xrange(ln))
+            return typ(combiner(a[i] for a in alts) for i in range(ln))
 
     return combiner(alts)
 
@@ -1377,7 +1404,7 @@ class Register(FeedbackVector):
         self.next = next
 
         if self._ls is not None:
-            self.connect_signals(next)
+            self.connect_signals()
         return self
 
     def connect_signals(self):
