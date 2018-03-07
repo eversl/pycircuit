@@ -11,7 +11,7 @@ from PyCircuit import signalsToInt, Vector, Decoder, calcAreaDelay, TestVector, 
     monitor, DontCareVal
 
 
-class Test(unittest.TestCase):
+class TestMSP430(unittest.TestCase):
     def assertVectorEqual(self, this, other, msg=None):
         if isinstance(this, Vector):
             thisVal = this.toUint()

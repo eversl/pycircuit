@@ -6,7 +6,7 @@ Created on Feb 4, 2014
 import inspect
 import itertools
 from functools import reduce
-from operator import __and__, __xor__, __or__, __invert__, or_, and_, xor
+from operator import __and__, __xor__, __or__, __invert__, or_, and_, xor, eq, ne
 
 sim_steps = 0
 
@@ -188,6 +188,15 @@ class Signal(object):
     def __iter__(self):
         return iter([self])
 
+    def eq(self, other):
+        return Not(Xor(self, other))
+
+    def neq(self, other):
+        return Xor(self, other)
+
+    def __hash__(self):
+        return id(self)
+
     def concat(self, *others):
         return Vector(self).concat(*others)
 
@@ -235,6 +244,8 @@ class Signal(object):
 
         if args:
             for a in args:
+                if isinstance(a, Vector):
+                    print(a)
                 assert not isinstance(a, Vector)
             args = tuple(a if isinstance(a, Signal) else ConstantSignal(a) for a in args)
             for arg in args:
@@ -406,6 +417,9 @@ class Vector(object):
         return self.bits
 
     def __getitem__(self, key):
+        if isinstance(key, Vector):
+            return Multiplexer(key, self.ls)
+
         def current_func(start, stop):
             mask = ((1 << (stop - start)) - 1)
 
@@ -447,6 +461,8 @@ class Vector(object):
             old = KoggeStoneAdder(self, other)[0]
             return old.ls
 
+        if not isinstance(other, Vector):
+            other = ConstantVector(other, self.bits)
         mask = (1 << self.bits) - 1
         res = CircuitVector(len_all(self, other), signals=signals,
                             func=lambda a, b: (a + b) & mask, args=[self, other])
@@ -516,6 +532,26 @@ class Vector(object):
     def __le__(self, other):
         return int(self) <= int(other)
 
+    def __eq__(self, other):
+        def signals():
+            return [And(*[s.eq(o) for s, o in zip(self.ls, other.ls)])]
+
+        if not isinstance(other, Vector):
+            other = ConstantVector(other, self.bits)
+        len_all(self, other)
+        res = CircuitVector(1, signals=signals,
+                            func=lambda a, b: int(a == b), args=[self, other])
+        return res
+
+    def __ne__(self, other):
+        def signals():
+            return [And(*[s.neq(o) for s, o in zip(self.ls, other.ls)])]
+
+        len_all(self, other)
+        res = CircuitVector(1, signals=signals,
+                            func=lambda a, b: int(a != b), args=[self, other])
+        return res
+
     def __gt__(self, other):
         return int(self) > int(other)
 
@@ -524,6 +560,9 @@ class Vector(object):
 
     def __bool__(self):
         return int(self) != 0
+
+    def __hash__(self):
+        return id(self)
 
     def concat(self, *others):
         def current_func(*vecs):
@@ -544,6 +583,13 @@ class Vector(object):
         res = CircuitVector(len(self) + sum(len(o) for o in others), signals=signals, func=current_func(self, *others),
                             args=[self] + list(others))
         return res
+
+    def concatRev(self, *others):
+        vectors = [self]
+        vectors.extend(others)
+        vectors.reverse()
+        return Vector.concat(*vectors)
+        return
 
     def extendBy(self, l, LSB=False, signed=False, signal=None):
         if signal is None:
@@ -765,8 +811,10 @@ class Clock(TestVector):
 
 
 class FeedbackVector(Vector):
-    def __init__(self, value=0, bits=1):
+    def __init__(self, value=0, bits=1, name=None):
         self.arg = None
+        self.name = name if name is not None else str(type(self).__name__) + str(id(self))
+
         if isinstance(value, Vector):
             bits = value.bits
         Vector.__init__(self, bits)
@@ -997,6 +1045,16 @@ class Nor(CircuitOper):
             return DontCareBool
         else:
             return not or_val
+
+
+class Eq(CircuitOper):
+    def func(self, *a):
+        return reduce(eq, a)
+
+
+class Ne(CircuitOper):
+    def func(self, *a):
+        return reduce(ne, a)
 
 
 class Enum(object):
@@ -1263,13 +1321,13 @@ def Memory(clk, addr, data, isWrite, init=None):
     mask = (1 << len(data)) - 1
     initvalues = [i & mask for i in (init + [0] * ((1 << len(addr)) - len(init)))]
 
-    wordlines = Decoder(addr)  # [c & r for c in collines for r in rowlines]
-    doWrite = isWrite & ~clk
-    isWriteVec = doWrite.dup(len(data))
-    sets = Vector.op(__and__, isWriteVec, data)
-    resets = Vector.op(__and__, isWriteVec, ~data)
 
     def signals():
+        wordlines = Decoder(addr)  # [c & r for c in collines for r in rowlines]
+        doWrite = isWrite & ~clk
+        isWriteVec = doWrite.dup(len(data))
+        sets = Vector.op(__and__, isWriteVec, data)
+        resets = Vector.op(__and__, isWriteVec, ~data)
         q_outs = [[SRLatch(access & s, access & r, b)[0] & access
                    for (s, r, b) in zip_all(sets.ls, resets.ls, list(intToBits(val, len(data))))]
                   for access, val in zip_all(wordlines.ls, initvalues)]
@@ -1391,14 +1449,13 @@ class Register(FeedbackVector):
         def inner():
             return self.current()
 
-        FeedbackVector.__init__(self, value, bits)
+        FeedbackVector.__init__(self, value, bits, name)
         self.clk = clk
         self.next = None
         self.prev = self
         clk.registers.append(self)
         self.func = inner
         self.args = []
-        self.name = name if name is not None else 'Register' + str(id(self))
 
     def connect(self, next):
         self.next = next
@@ -1422,3 +1479,6 @@ class Register(FeedbackVector):
 
         self.checkEqual(val)
         return val
+
+    def __repr__(self):
+        return "{}: {}".format(self.name, FeedbackVector.__repr__(self))
