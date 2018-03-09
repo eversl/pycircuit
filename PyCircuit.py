@@ -1452,7 +1452,6 @@ class Register(FeedbackVector):
         FeedbackVector.__init__(self, value, bits, name)
         self.clk = clk
         self.next = None
-        self.prev = self
         clk.registers.append(self)
         self.func = inner
         self.args = []

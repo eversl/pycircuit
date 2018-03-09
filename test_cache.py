@@ -1,6 +1,6 @@
 import unittest
 
-from PyCircuit import Clock, TestVector
+from PyCircuit import Clock, TestVector, monitor
 from cache import Cache, Set
 
 
@@ -43,26 +43,29 @@ class TestCache(unittest.TestCase):
             i_m_readdata,
             i_m_readdata_valid,
             i_m_waitrequest)
-        # self.assertVectorEqual(q, d)
-        # self.assertCurrent(q)
-        # print(calcAreaDelay(a.concat(d).concat(mem_wr)))
-        # for i in range(2 ** SZ):
-        #     a[:] = i
-        #     self.assertVectorEqual(q, 0)
-        #     self.assertCurrent(q)
-        # for i in range(2 ** SZ):
-        #     d[:] = i
-        #     a[:] = i
-        #     mem_wr[:] = 1
-        #     self.assertVectorEqual(q, d)
-        #     self.assertCurrent(q)
-        #     mem_wr[:] = 0
-        #     self.assertVectorEqual(q, d)
-        #     self.assertCurrent(q)
-        # for i in range(2 ** SZ):
-        #     a[:] = i
-        #     self.assertVectorEqual(q, i)
-        #     self.assertCurrent(q)
+
+        monitor(o_m_writedata)
+        clk.cycle()
+        SZ = 8
+        self.assertVectorEqual(o_m_writedata, i_p_writedata)
+        self.assertCurrent(o_m_writedata)
+        for i in range(2 ** SZ):
+            i_p_addr[:] = i
+            self.assertVectorEqual(o_m_writedata, 0)
+            self.assertCurrent(o_m_writedata)
+        for i in range(2 ** SZ):
+            i_p_writedata[:] = i
+            i_p_addr[:] = i
+            i_p_write[:] = 1
+            self.assertVectorEqual(q, i_p_writedata)
+            self.assertCurrent(q)
+            i_p_write[:] = 0
+            self.assertVectorEqual(q, i_p_writedata)
+            self.assertCurrent(q)
+        for i in range(2 ** SZ):
+            i_p_addr[:] = i
+            self.assertVectorEqual(q, i)
+            self.assertCurrent(q)
 
     def test_Set(self):
         clk = Clock()

@@ -1,34 +1,42 @@
 from PyCircuit import Vector, Or, Memory, Register, VFalse, VTrue, \
-    FeedbackVector, If, Enum, ConstantVector, And
+    FeedbackVector, If, Enum, ConstantVector, And, Case
 
 
-class doIf:
+class abstractDo:
+    pass
+
+
+class doIf(abstractDo):
     def __init__(self, cond):
         self.cond = cond
 
     def do(self, val):
         assert len(self.cond) == 1
-        if isinstance(val, tuple):
-            then_, else_ = val
-        else:
-            then_ = val
-            else_ = {}
-        for r in then_:
-            doReg(r, then_[r])
-        for r in else_:
-            doReg(r, else_[r])
+        for r in val:
+            if isinstance(r, abstractDo):
+                r.do(val[r])
 
 
-class doElif:
+class doElif(abstractDo):
     def __init__(self, cond):
         self.cond = cond
 
+    def do(self, val):
+        assert len(self.cond) == 1
+        for r in val:
+            r.do(val[r])
 
-class doElse:
+
+class doElse(abstractDo):
     pass
 
+    def do(self, val):
+        for r in val:
+            if isinstance(r, abstractDo):
+                r.do(val)
 
-class doCase:
+
+class doCase(abstractDo):
     def __init__(self, cond):
         self.cond = cond
 
@@ -38,12 +46,17 @@ class doCase:
         for c in cases:
             print("  ", str(c), ":")
             for r in cases[c]:
-                doReg(r, cases[c][r])
+                if isinstance(r, abstractDo):
+                    r.do(cases[c][r])
 
 
-def do(clk, dict):
-    for r in dict:
-        doReg(r, dict[r])
+class do:
+    def __init__(self, clk, dict):
+        for r in dict:
+            if isinstance(r, abstractDo):
+                r.do(dict[r])
+            else:
+                print(r)
 
 
 def doReg(r, val):
@@ -629,7 +642,65 @@ def Cache(clk,
     valid.connect(Vector.concatRev(valid0, valid1, valid2, valid3))
 
     do(clk, {
+        doIf(rst): {
+            state: "IDLE"
+        }, doElse(): {
+            doCase(state): {
+                "IDLE": {
+                    doIf(i_p_read): {state: "COMP"},
+                    doElif(i_p_write): {state: "COMP"}
+                }, "COMP": {
+                    doIf(hit.reduce(Or) & write_buf): {
+                        state: "HIT",
+                    },
+                    doElif(hit.reduce(Or) & read_buf): {
+                        state: "IDLE"
+                    }, doElif(~valid.reduce(And) | miss[r_cm_data[0:2]]): {
+                        state: "FETCH1",
+                    }, doElse(): {
+                        state: "WB1",
+                    }
+                }, "HIT": {
+                    state: "IDLE",
+                }, "FETCH1": {
+                    doIf(~i_m_waitrequest): {
+                        state: "FETCH2",
+                    }
+                }, "FETCH2": {
+                    doIf(i_m_readdata_valid): {
+                        doIf(write_buf): {
+                            state: "FETCH3",
+                        }, doElif(read_buf): {
+                            state: "IDLE",
+                        }
+                    }
+                }, "FETCH3": {
+                    state: "IDLE",
+                }, "WB1": {
+                    state: "WB2"
+                }, "WB2": {
+                    state: "FETCH1"
+                }
+            }
+        }
+    })
 
+    state.connect(If(rst, "IDLE",
+                     Case(state, {
+                         "IDLE": If(i_p_read, "COMP", If(i_p_write, "COMP", state)),
+                         "COMP": If(hit.reduce(Or) & write_buf, "HIT", If(hit.reduce(Or) & read_buf, "IDLE",
+                                                                          If(~valid.reduce(And) | miss[r_cm_data[0:2]],
+                                                                             "FETCH1", "WB1"))),
+                         "HIT": "IDLE",
+                         "FETCH1": If(~i_m_waitrequest, "FETCH2", state),
+                         "FETCH2": If(i_m_readdata_valid, If(write_buf, "FETCH3", If(read_buf, "IDLE", state))),
+                         "FETCH3": "IDLE",
+                         "WB1": "WB2",
+                         "WB2": "FETCH1"
+                     }
+                          )))
+
+    do(clk, {
         doIf(rst): {
             o_p_readdata_valid: 0,
             o_m_read: 0, o_m_write: 0,
